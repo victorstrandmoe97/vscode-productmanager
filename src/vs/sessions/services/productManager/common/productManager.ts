@@ -11,14 +11,6 @@ export const PRODUCT_MANAGER_MODE_SETTING = 'sessions.productManager.enabled';
 export const PRODUCT_MANAGER_ESTIMATOR_URL_SETTING = 'sessions.productManager.estimatorUrl';
 export const PRODUCT_MANAGER_REPO_ID_SETTING = 'sessions.productManager.repoId';
 export const PRODUCT_MANAGER_REPO_URL_SETTING = 'sessions.productManager.repoUrl';
-export const PRODUCT_MANAGER_ARTIFACT_DIRECTORY = '.vscode/product-manager';
-export const PRODUCT_MANAGER_MANIFEST_FILE = 'manifest.json';
-export const PRODUCT_MANAGER_ARCHITECTURE_FILE = 'architecture.json';
-export const PRODUCT_MANAGER_FEATURES_FILE = 'features.json';
-export const PRODUCT_MANAGER_PROJECT_SUMMARY_FILE = 'project-summary.json';
-export const PRODUCT_MANAGER_MARKET_FILE = 'market.json';
-export const PRODUCT_MANAGER_JIRA_DIRECTORY = 'jira';
-export const PRODUCT_MANAGER_JIRA_ISSUES_FILE = 'issues.json';
 
 export const CONNECT_JIRA_COMMAND_ID = 'workbench.action.productManager.connectJira';
 export const CONNECT_CRM_COMMAND_ID = 'workbench.action.productManager.connectCrm';
@@ -76,51 +68,6 @@ export interface IProductManagerArtifactsState {
 	readonly generatedAt?: string;
 }
 
-export interface IProductManagerManifest {
-	readonly version: number;
-	readonly generatedAt?: string;
-	readonly generatorVersion?: string;
-	readonly artifacts?: {
-		readonly architecture?: string;
-		readonly features?: string;
-		readonly projectSummary?: string;
-		readonly market?: string;
-		readonly jiraIssues?: string;
-	};
-}
-
-export interface IProductManagerProjectSummaryArtifact {
-	readonly title?: string;
-	readonly summary?: string;
-	readonly highlights?: readonly string[];
-}
-
-export interface IProductManagerArchitectureArtifact {
-	readonly version?: number;
-	readonly lanes: readonly {
-		readonly id: ProductManagerLaneId;
-		readonly label?: string;
-		readonly title?: string;
-		readonly summary?: string;
-		readonly coverageLabel?: string;
-		readonly coverage?: {
-			readonly fileCount?: number;
-			readonly moduleCount?: number;
-			readonly estimatedWeight?: number;
-		};
-	}[];
-}
-
-export interface IProductManagerFeaturesArtifact {
-	readonly version?: number;
-	readonly features: readonly {
-		readonly id?: string;
-		readonly name?: string;
-		readonly title?: string;
-		readonly summary?: string;
-		readonly lanes?: readonly ProductManagerLaneId[];
-	}[];
-}
 
 export interface IProductManagerDataService {
 	readonly _serviceBrand: undefined;
@@ -133,7 +80,9 @@ export interface IProductManagerDataService {
 	getJira(): IProductManagerJiraModel;
 	getMarket(): IProductManagerMarketModel;
 	fetchArchitectureFromApi(): Promise<void>;
-	connectRepository(repoUrl: string, githubToken?: string): Promise<void>;
+	connectRepository(repoUrl: string, githubToken?: string, githubUsername?: string): Promise<void>;
+	disconnectRepository(): Promise<void>;
+	recookAndRefresh(): Promise<void>;
 }
 
 export const IProductManagerDataService = createDecorator<IProductManagerDataService>('productManagerDataService');

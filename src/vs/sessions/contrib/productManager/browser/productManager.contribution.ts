@@ -60,7 +60,7 @@ const productManagerSidebarContainer = viewContainerRegistry.registerViewContain
 
 const productManagerAuxiliaryContainer = viewContainerRegistry.registerViewContainer({
 	id: PRODUCT_MANAGER_AUXILIARY_CONTAINER_ID,
-	title: localize2('productAuxiliaryContainer', "Product Map"),
+	title: localize2('productAuxiliaryContainer', "Product"),
 	icon: productManagerAuxiliaryIcon,
 	order: 1,
 	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [PRODUCT_MANAGER_AUXILIARY_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: false }]),

@@ -5,30 +5,18 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { joinPath } from '../../../../base/common/resources.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IFileService, FileOperationError, FileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import {
-	IProductManagerArchitectureArtifact,
 	IProductManagerArtifactsState,
 	IProductManagerDataService,
 	IProductManagerFeatureModel,
-	IProductManagerFeaturesArtifact,
 	IProductManagerJiraModel,
 	IProductManagerLaneModel,
-	IProductManagerManifest,
 	IProductManagerMarketModel,
 	IProductManagerOverviewModel,
-	IProductManagerProjectSummaryArtifact,
-	PRODUCT_MANAGER_ARCHITECTURE_FILE,
 	PRODUCT_MANAGER_ESTIMATOR_URL_SETTING,
-	PRODUCT_MANAGER_FEATURES_FILE,
-	PRODUCT_MANAGER_MANIFEST_FILE,
-	PRODUCT_MANAGER_PROJECT_SUMMARY_FILE,
 	PRODUCT_MANAGER_REPO_ID_SETTING,
 	PRODUCT_MANAGER_REPO_URL_SETTING,
 	ProductManagerLaneId,
@@ -91,13 +79,6 @@ const defaultMarket: IProductManagerMarketModel = {
 	],
 };
 
-function getDefaultArtifactsState(): IProductManagerArtifactsState {
-	return {
-		status: 'loading',
-		message: localize('productArtifactsLoading', "Loading Product Mode artifacts..."),
-	};
-}
-
 export class ProductManagerDataService extends Disposable implements IProductManagerDataService {
 
 	declare readonly _serviceBrand: undefined;
@@ -105,22 +86,31 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange = this._onDidChange.event;
 
-	private artifactsState: IProductManagerArtifactsState = getDefaultArtifactsState();
+	private artifactsState: IProductManagerArtifactsState = {
+		status: 'notGenerated',
+		message: localize('productArtifactsNoRepoId', "Connect a GitHub repository to load the architecture map."),
+	};
 	private overview = defaultOverview;
 	private architecture = defaultArchitecture;
 	private features = defaultFeatures;
 	private jira = defaultJira;
 	private market = defaultMarket;
 
+	/** In-memory GitHub credentials for the current session — used by recookAndRefresh. */
+	private _githubToken: string | undefined;
+	private _githubUsername: string | undefined;
+
 	constructor(
-		@IFileService private readonly fileService: IFileService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
-		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => void this.reload()));
-		void this.reload();
+
+		// Auto-load from API on startup if a repo is already configured.
+		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
+		if (repoId) {
+			void this.fetchArchitectureFromApi();
+		}
 	}
 
 	getArtifactsState(): IProductManagerArtifactsState {
@@ -147,16 +137,19 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		return this.market;
 	}
 
-	async connectRepository(repoUrl: string, githubToken?: string): Promise<void> {
+	async connectRepository(repoUrl: string, githubToken?: string, githubUsername?: string): Promise<void> {
 		const baseUrl = (this.configurationService.getValue<string>(PRODUCT_MANAGER_ESTIMATOR_URL_SETTING) || 'http://localhost:8000').replace(/\/$/, '');
 
-		// Derive a display name from the URL (e.g. "owner/repo")
 		const urlMatch = repoUrl.replace(/\.git$/, '').match(/github\.com[/:](.+)/i);
 		const name = urlMatch ? urlMatch[1] : repoUrl;
 
-		this.logService.info('[ProductManagerDataService] connectRepository: url=%s', repoUrl);
+		if (githubToken) {
+			this._githubToken = githubToken;
+			this._githubUsername = githubUsername || 'git';
+		}
 
-		// Register or retrieve the repo
+		this.logService.info('[ProductManagerDataService] connectRepository: url=%s pat_provided=%s username=%s', repoUrl, !!githubToken, this._githubUsername);
+
 		this.artifactsState = {
 			status: 'loading',
 			message: localize('connectingRepo', "Connecting repository {0}…", name),
@@ -186,12 +179,10 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 			return;
 		}
 
-		// Persist repo_id and repo_url to user settings so they survive restarts
 		await this.configurationService.updateValue(PRODUCT_MANAGER_REPO_ID_SETTING, repoId, ConfigurationTarget.USER);
 		await this.configurationService.updateValue(PRODUCT_MANAGER_REPO_URL_SETTING, repoUrl, ConfigurationTarget.USER);
 		this.logService.info('[ProductManagerDataService] connectRepository: saved repo_id and repo_url to user settings');
 
-		// Trigger ingestion (clones repo + indexes files in graph engine)
 		this.artifactsState = {
 			status: 'loading',
 			message: localize('ingestingRepo', "Indexing repository {0} — this may take a minute…", name),
@@ -201,8 +192,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		try {
 			const ingestBody: Record<string, string> = {};
 			if (githubToken) {
-				// Extract username hint from token if possible; fall back to 'git' for PAT-based auth
-				ingestBody['github_username'] = 'git';
+				ingestBody['github_username'] = githubUsername || 'git';
 				ingestBody['github_token'] = githubToken;
 			}
 			const ingestResp = await fetch(`${baseUrl}/api/repos/${encodeURIComponent(repoId)}/ingest`, {
@@ -224,7 +214,6 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 			return;
 		}
 
-		// Poll ingest status (max 5 minutes, 4-second intervals)
 		const maxPolls = 75;
 		for (let i = 0; i < maxPolls; i++) {
 			await new Promise<void>(resolve => setTimeout(resolve, 4000));
@@ -248,7 +237,6 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 					break;
 				}
 
-				// Show progress
 				this.artifactsState = {
 					status: 'loading',
 					message: localize('ingestProgress', "Indexing {0} — phase: {1}…", name, status.phase ?? 'running'),
@@ -259,7 +247,78 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 			}
 		}
 
-		// Load architecture now that indexing is complete
+		await this.fetchArchitectureFromApi();
+	}
+
+	async disconnectRepository(): Promise<void> {
+		this.logService.info('[ProductManagerDataService] disconnectRepository: clearing repo_id, repo_url, and in-memory credentials');
+		this._githubToken = undefined;
+		this._githubUsername = undefined;
+		await this.configurationService.updateValue(PRODUCT_MANAGER_REPO_ID_SETTING, undefined, ConfigurationTarget.USER);
+		await this.configurationService.updateValue(PRODUCT_MANAGER_REPO_URL_SETTING, undefined, ConfigurationTarget.USER);
+		this.overview = defaultOverview;
+		this.architecture = defaultArchitecture;
+		this.features = defaultFeatures;
+		this.artifactsState = {
+			status: 'notGenerated',
+			message: localize('repositoryDisconnected', "Repository disconnected. Connect a GitHub repository to load the architecture map."),
+		};
+		this._onDidChange.fire();
+	}
+
+	async recookAndRefresh(): Promise<void> {
+		const baseUrl = (this.configurationService.getValue<string>(PRODUCT_MANAGER_ESTIMATOR_URL_SETTING) || 'http://localhost:8000').replace(/\/$/, '');
+		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
+
+		if (!repoId) {
+			this.logService.warn('[ProductManagerDataService] recookAndRefresh: no repoId set — use "Connect Repository" first');
+			this.artifactsState = {
+				status: 'notGenerated',
+				message: localize('recookNoRepoId', "Connect a GitHub repository before refreshing."),
+			};
+			this._onDidChange.fire();
+			return;
+		}
+
+		if (!this._githubToken) {
+			this.logService.warn('[ProductManagerDataService] recookAndRefresh: no in-memory token — re-clone may fail for private repos. Use "Change Repository" to reconnect with credentials.');
+		}
+
+		this.logService.info('[ProductManagerDataService] recookAndRefresh: starting recook for repoId=%s', repoId);
+		this.artifactsState = {
+			status: 'loading',
+			message: localize('recookIndexing', "Re-indexing repository — this may take a minute…"),
+		};
+		this._onDidChange.fire();
+
+		try {
+			const recookBody: Record<string, string> = {};
+			if (this._githubToken) {
+				recookBody['github_username'] = this._githubUsername || 'git';
+				recookBody['github_token'] = this._githubToken;
+			}
+			const recookResp = await fetch(`${baseUrl}/api/repos/${encodeURIComponent(repoId)}/recook`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(Object.keys(recookBody).length ? recookBody : null),
+			});
+			if (!recookResp.ok) {
+				const body = await recookResp.text().catch(() => recookResp.statusText);
+				throw new Error(`HTTP ${recookResp.status}: ${body}`);
+			}
+			const result = await recookResp.json() as { status: string; cook_status?: string; symbols?: number };
+			this.logService.info('[ProductManagerDataService] recookAndRefresh: recook complete — cook_status=%s symbols=%d',
+				result.cook_status, result.symbols ?? 0);
+		} catch (error) {
+			this.logService.error('[ProductManagerDataService] recookAndRefresh failed:', error);
+			this.artifactsState = {
+				status: 'error',
+				message: localize('recookFailed', "Re-indexing failed: {0}", String(error)),
+			};
+			this._onDidChange.fire();
+			return;
+		}
+
 		await this.fetchArchitectureFromApi();
 	}
 
@@ -268,7 +327,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
 
 		if (!repoId) {
-			this.logService.warn('[ProductManagerDataService] fetchArchitectureFromApi: sessions.productManager.repoId is not set — use "Connect Repository" to set it');
+			this.logService.warn('[ProductManagerDataService] fetchArchitectureFromApi: no repoId set — use "Connect Repository" first');
 			this.artifactsState = {
 				status: 'notGenerated',
 				message: localize('productArtifactsNoRepoId', "Connect a GitHub repository to load the architecture map."),
@@ -278,6 +337,11 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		}
 
 		this.logService.info('[ProductManagerDataService] fetchArchitectureFromApi: baseUrl=%s repoId=%s', baseUrl, repoId);
+		this.artifactsState = {
+			status: 'loading',
+			message: localize('architectureLoading', "Loading architecture map…"),
+		};
+		this._onDidChange.fire();
 
 		try {
 			const response = await fetch(`${baseUrl}/api/repos/${encodeURIComponent(repoId)}/architecture`);
@@ -297,6 +361,11 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 				}>;
 			};
 
+			// Strip the Docker-internal prefix "repos/{uuid}/" from every path so
+			// only the repository-relative path is shown in the UI.
+			const repoPathPrefix = new RegExp(`^/?repos/${repoId}/`);
+			const stripPrefix = (p: string) => p.replace(repoPathPrefix, '');
+
 			const knownLaneIds = new Set<string>(['shared', 'application', 'presentation', 'entrypoint', 'ops', 'data', 'domain']);
 			this.architecture = data.lanes.map(lane => {
 				const laneId = knownLaneIds.has(lane.id) ? (lane.id as ProductManagerLaneId) : 'shared' as ProductManagerLaneId;
@@ -306,7 +375,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 					title: lane.label,
 					summary: lane.summary,
 					coverageLabel: localize('coverageFromApi', "{0} files · {1}%", lane.file_count, pct),
-					files: lane.files,
+					files: lane.files.map(stripPrefix),
 					fileCount: lane.file_count,
 					weight: lane.weight,
 				} satisfies IProductManagerLaneModel;
@@ -327,140 +396,5 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		}
 
 		this._onDidChange.fire();
-	}
-
-	private async reload(): Promise<void> {
-		this.artifactsState = getDefaultArtifactsState();
-		this._onDidChange.fire();
-
-		const workspaceRoot = this.workspaceContextService.getWorkspace().folders[0]?.uri;
-		if (!workspaceRoot) {
-			this.applyDefaults({
-				status: 'notGenerated',
-				message: localize('productArtifactsNoWorkspace', "Open a repository to generate and persist Product Mode artifacts."),
-			});
-			return;
-		}
-
-		const artifactsRoot = joinPath(workspaceRoot, '.vscode', 'product-manager');
-		const manifestResource = joinPath(artifactsRoot, PRODUCT_MANAGER_MANIFEST_FILE);
-		const manifest = await this.readJsonIfExists<IProductManagerManifest>(manifestResource);
-		if (!manifest) {
-			this.applyDefaults({
-				status: 'notGenerated',
-				message: localize('productArtifactsMissing', "No Product Mode artifacts were found in `.vscode/product-manager` yet."),
-			});
-			return;
-		}
-
-		const projectSummaryResource = joinPath(artifactsRoot, manifest.artifacts?.projectSummary ?? PRODUCT_MANAGER_PROJECT_SUMMARY_FILE);
-		const architectureResource = joinPath(artifactsRoot, manifest.artifacts?.architecture ?? PRODUCT_MANAGER_ARCHITECTURE_FILE);
-		const featuresResource = joinPath(artifactsRoot, manifest.artifacts?.features ?? PRODUCT_MANAGER_FEATURES_FILE);
-
-		const [projectSummary, architecture, features] = await Promise.all([
-			this.readJsonIfExists<IProductManagerProjectSummaryArtifact>(projectSummaryResource),
-			this.readJsonIfExists<IProductManagerArchitectureArtifact>(architectureResource),
-			this.readJsonIfExists<IProductManagerFeaturesArtifact>(featuresResource),
-		]);
-
-		this.overview = this.mergeOverview(defaultOverview, projectSummary);
-		this.architecture = architecture ? this.mergeArchitecture(defaultArchitecture, architecture) : defaultArchitecture;
-		this.features = features ? this.mergeFeatures(defaultFeatures, features) : defaultFeatures;
-		this.jira = defaultJira;
-		this.market = defaultMarket;
-		this.artifactsState = {
-			status: 'ready',
-			message: localize('productArtifactsReady', "Loaded persisted Product Mode artifacts from the repository."),
-			generatedAt: manifest.generatedAt,
-		};
-		this._onDidChange.fire();
-	}
-
-	private applyDefaults(state: IProductManagerArtifactsState): void {
-		this.overview = defaultOverview;
-		this.architecture = defaultArchitecture;
-		this.features = defaultFeatures;
-		this.jira = defaultJira;
-		this.market = defaultMarket;
-		this.artifactsState = state;
-		this._onDidChange.fire();
-	}
-
-	private mergeOverview(defaultValue: IProductManagerOverviewModel, artifact: IProductManagerProjectSummaryArtifact | undefined): IProductManagerOverviewModel {
-		if (!artifact) {
-			return defaultValue;
-		}
-
-		return {
-			title: artifact.title || defaultValue.title,
-			summary: artifact.summary || defaultValue.summary,
-			highlights: artifact.highlights?.length ? artifact.highlights : defaultValue.highlights,
-		};
-	}
-
-	private mergeArchitecture(defaultValue: readonly IProductManagerLaneModel[], artifact: IProductManagerArchitectureArtifact): readonly IProductManagerLaneModel[] {
-		const artifactsById = new Map<ProductManagerLaneId, IProductManagerArchitectureArtifact['lanes'][number]>();
-		for (const lane of artifact.lanes) {
-			artifactsById.set(lane.id, lane);
-		}
-
-		return defaultValue.map(lane => {
-			const persistedLane = artifactsById.get(lane.id);
-			if (!persistedLane) {
-				return lane;
-			}
-
-			return {
-				id: lane.id,
-				title: persistedLane.label || persistedLane.title || lane.title,
-				summary: persistedLane.summary || lane.summary,
-				coverageLabel: persistedLane.coverageLabel || this.formatCoverageLabel(persistedLane.coverage) || lane.coverageLabel,
-			};
-		});
-	}
-
-	private mergeFeatures(defaultValue: readonly IProductManagerFeatureModel[], artifact: IProductManagerFeaturesArtifact): readonly IProductManagerFeatureModel[] {
-		const persistedFeatures = artifact.features
-			.filter(feature => !!feature.name || !!feature.title)
-			.map(feature => ({
-				title: feature.name || feature.title || localize('unnamedFeature', "Unnamed Feature"),
-				summary: feature.summary || localize('featureSummaryMissing', "No persisted summary yet."),
-				lanes: feature.lanes?.length ? feature.lanes : ([] as readonly ProductManagerLaneId[]),
-			}));
-
-		return persistedFeatures.length ? persistedFeatures : defaultValue;
-	}
-
-	private formatCoverageLabel(coverage: IProductManagerArchitectureArtifact['lanes'][number]['coverage']): string | undefined {
-		if (!coverage) {
-			return undefined;
-		}
-
-		const segments: string[] = [];
-		if (typeof coverage.fileCount === 'number') {
-			segments.push(localize('coverageFilesCount', "{0} files", coverage.fileCount));
-		}
-		if (typeof coverage.moduleCount === 'number') {
-			segments.push(localize('coverageModulesCount', "{0} modules", coverage.moduleCount));
-		}
-		if (typeof coverage.estimatedWeight === 'number') {
-			segments.push(localize('coverageWeightCount', "{0}% weight", Math.round(coverage.estimatedWeight * 100)));
-		}
-
-		return segments.length ? segments.join(' • ') : undefined;
-	}
-
-	private async readJsonIfExists<T>(resource: URI): Promise<T | undefined> {
-		try {
-			const content = await this.fileService.readFile(resource);
-			return JSON.parse(content.value.toString()) as T;
-		} catch (error) {
-			if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
-				return undefined;
-			}
-
-			this.logService.warn('Failed to read Product Mode artifact', resource.toString(), error);
-			return undefined;
-		}
 	}
 }

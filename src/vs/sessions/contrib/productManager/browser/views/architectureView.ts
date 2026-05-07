@@ -90,7 +90,7 @@ export class ArchitectureView extends ViewPane {
 			connectButton.element.title = localize('connectRepositoryTooltip', "Enter a GitHub repository URL and optional PAT to load the architecture map");
 			this._register(connectButton.onDidClick(() => void this.runConnectDialog(connectButton)));
 		} else {
-			// Repo already connected — show load + reconnect options
+			// Repo already connected — show load + reconnect + refresh + delete options
 			const loadButton = this._register(new Button(actionsRow, defaultButtonStyles));
 			loadButton.label = localize('loadArchitecture', "Load Architecture");
 			this._register(loadButton.onDidClick(async () => {
@@ -108,6 +108,32 @@ export class ArchitectureView extends ViewPane {
 			reconnectButton.label = localize('reconnectRepository', "Change Repository");
 			reconnectButton.element.title = localize('reconnectRepositoryTooltip', "Connect a different repository");
 			this._register(reconnectButton.onDidClick(() => void this.runConnectDialog(reconnectButton)));
+
+			const refreshButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: true }));
+			refreshButton.label = localize('refreshArchitecture', "Refresh");
+			refreshButton.element.title = localize('refreshArchitectureTooltip', "Re-index the repository and reload the architecture map");
+			this._register(refreshButton.onDidClick(async () => {
+				refreshButton.enabled = false;
+				refreshButton.label = localize('refreshingArchitecture', "Indexing…");
+				try {
+					await this.productManagerDataService.recookAndRefresh();
+				} finally {
+					refreshButton.enabled = true;
+					refreshButton.label = localize('refreshArchitecture', "Refresh");
+				}
+			}));
+
+			const deleteButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: true }));
+			deleteButton.label = localize('deleteRepository', "Delete Repository");
+			deleteButton.element.title = localize('deleteRepositoryTooltip', "Disconnect this repository and reset all Product Mode state");
+			this._register(deleteButton.onDidClick(async () => {
+				deleteButton.enabled = false;
+				try {
+					await this.productManagerDataService.disconnectRepository();
+				} finally {
+					deleteButton.enabled = true;
+				}
+			}));
 		}
 
 		// Lane list (only shown when data is ready)
@@ -127,7 +153,7 @@ export class ArchitectureView extends ViewPane {
 
 		try {
 			const repoUrl = await this.quickInputService.input({
-				title: localize('connectDialogTitle', "Connect Repository"),
+				title: localize('connectDialogTitle', "Connect Repository (1/3) — URL"),
 				placeHolder: 'https://github.com/owner/repo',
 				prompt: localize('connectDialogUrlPrompt', "Enter the GitHub repository URL"),
 				ignoreFocusLost: true,
@@ -146,16 +172,36 @@ export class ArchitectureView extends ViewPane {
 				return; // user cancelled
 			}
 
+			const githubUsername = await this.quickInputService.input({
+				title: localize('connectDialogUsernameTitle', "Connect Repository (2/3) — GitHub Username"),
+				placeHolder: 'your-github-username (leave empty for public repositories)',
+				prompt: localize('connectDialogUsernamePrompt', "Enter your GitHub username — required for private repositories"),
+				ignoreFocusLost: true,
+			});
+
+			if (githubUsername === undefined) {
+				return; // user cancelled
+			}
+
 			const githubToken = await this.quickInputService.input({
-				title: localize('connectDialogPatTitle', "GitHub Personal Access Token"),
+				title: localize('connectDialogPatTitle', "Connect Repository (3/3) — Personal Access Token"),
 				placeHolder: 'ghp_… (leave empty for public repositories)',
-				prompt: localize('connectDialogPatPrompt', "Paste your GitHub PAT — used only to clone the repository, never stored"),
+				prompt: localize('connectDialogPatPrompt', "Paste your GitHub PAT — kept in memory for this session only, never written to disk"),
 				password: true,
 				ignoreFocusLost: true,
 			});
 
-			// githubToken can be undefined (cancelled) or '' (skipped); treat both as no auth
-			await this.productManagerDataService.connectRepository(repoUrl.trim(), githubToken?.trim() || undefined);
+			if (githubToken === undefined) {
+				return; // user cancelled
+			}
+
+			// Build token: prefer explicit PAT; fall back to no auth for public repos.
+			// Username is stored alongside the token so recook can reuse the same credentials.
+			await this.productManagerDataService.connectRepository(
+				repoUrl.trim(),
+				githubToken.trim() || undefined,
+				githubUsername.trim() || undefined,
+			);
 		} finally {
 			triggerButton.enabled = true;
 		}
