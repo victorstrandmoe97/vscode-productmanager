@@ -29,6 +29,7 @@ import { WorkspacePicker, IWorkspaceSelection } from './sessionWorkspacePicker.j
 import { WebWorkspacePicker } from './webWorkspacePicker.js';
 import { NewChatInputWidget } from './newChatInput.js';
 import { IChatRequestVariableEntry } from '../../../../workbench/contrib/chat/common/attachments/chatVariableEntries.js';
+import { isProductManagerEnabled } from '../../../services/productManager/common/productManager.js';
 
 // #region --- New Chat Widget ---
 
@@ -48,6 +49,7 @@ class NewChatWidget extends Disposable {
 		@ISessionsProvidersService private readonly sessionsProvidersService: ISessionsProvidersService,
 		@IWorkspaceTrustRequestService private readonly workspaceTrustRequestService: IWorkspaceTrustRequestService,
 		@IAquariumService private readonly aquariumService: IAquariumService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		// On web (vscode.dev / insiders.vscode.dev), use {@link WebWorkspacePicker}
@@ -76,6 +78,9 @@ class NewChatWidget extends Disposable {
 			sendRequest: async (text: string, attachedContext?: IChatRequestVariableEntry[]) => this._send(text, attachedContext),
 			canSendRequest,
 			loading,
+			placeholder: this.isProductManagerMode
+				? localize('productChatPlaceholder', "Ask about a feature, workflow, customer outcome, or delivery risk...")
+				: undefined,
 		}));
 
 		this._register(this._workspacePicker.onDidSelectWorkspace(async workspace => {
@@ -199,13 +204,13 @@ class NewChatWidget extends Disposable {
 		const pickersRow = dom.append(container, dom.$('.session-workspace-picker'));
 		const pickersLabel = dom.append(pickersRow, dom.$('.session-workspace-picker-label'));
 		pickersLabel.textContent = this._workspacePicker.selectedProject
-			? localize('newSessionIn', "New session in")
-			: localize('newSessionChooseWorkspace', "Start by picking a");
+			? this.getSelectedWorkspaceLabel()
+			: this.getChooseWorkspaceLabel();
 
 		this._workspacePicker.render(pickersRow);
 		return this._workspacePicker.onDidSelectWorkspace(() => {
 			const workspace = this._workspacePicker.selectedProject;
-			pickersLabel.textContent = workspace ? localize('newSessionIn', "New session in") : localize('newSessionChooseWorkspace', "Start by picking a");
+			pickersLabel.textContent = workspace ? this.getSelectedWorkspaceLabel() : this.getChooseWorkspaceLabel();
 		});
 	}
 
@@ -227,7 +232,9 @@ class NewChatWidget extends Disposable {
 	private async _requestFolderTrust(folderUri: URI): Promise<boolean> {
 		const trusted = await this.workspaceTrustRequestService.requestResourcesTrust({
 			uri: folderUri,
-			message: localize('trustFolderMessage', "An agent session will be able to read files, run commands, and make changes in this folder."),
+			message: this.isProductManagerMode
+				? localize('productTrustFolderMessage', "Product Mode will be able to read files, run commands, and make changes in this folder.")
+				: localize('trustFolderMessage', "An agent session will be able to read files, run commands, and make changes in this folder."),
 		});
 		if (!trusted) {
 			this._workspacePicker.removeFromRecents(folderUri);
@@ -284,6 +291,22 @@ class NewChatWidget extends Disposable {
 
 	selectWorkspace(workspace: IWorkspaceSelection): void {
 		this._workspacePicker.setSelectedWorkspace(workspace);
+	}
+
+	private get isProductManagerMode(): boolean {
+		return isProductManagerEnabled(this.configurationService);
+	}
+
+	private getChooseWorkspaceLabel(): string {
+		return this.isProductManagerMode
+			? localize('productChooseRepository', "Start by picking a repository")
+			: localize('newSessionChooseWorkspace', "Start by picking a");
+	}
+
+	private getSelectedWorkspaceLabel(): string {
+		return this.isProductManagerMode
+			? localize('productViewForWorkspace', "Product view for")
+			: localize('newSessionIn', "New session in");
 	}
 }
 

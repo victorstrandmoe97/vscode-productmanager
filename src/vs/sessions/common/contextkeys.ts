@@ -30,6 +30,7 @@ export const ChatBarVisibleContext = new RawContextKey<boolean>('chatBarVisible'
 //#region < --- Welcome --- >
 
 export const SessionsWelcomeVisibleContext = new RawContextKey<boolean>('sessionsWelcomeVisible', false, localize('sessionsWelcomeVisible', "Whether the sessions welcome overlay is visible"));
+export const ProductManagerModeContext = new RawContextKey<boolean>('sessionsProductManagerMode', false, localize('sessionsProductManagerMode', "Whether Product Mode is enabled in the sessions workbench"));
 
 //#endregion
 

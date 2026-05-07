@@ -16,6 +16,7 @@ import { SessionsView, SessionsViewId } from './views/sessionsView.js';
 import './views/sessionsViewActions.js';
 import './sessionsActions.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { ProductManagerModeContext } from '../../../common/contextkeys.js';
 
 const agentSessionsViewIcon = registerIcon('chat-sessions-icon', Codicon.commentDiscussionSparkle, localize('agentSessionsViewIcon', 'Icon for Agent Sessions View'));
 const AGENT_SESSIONS_VIEW_TITLE = localize2('agentSessions.view.label', "Sessions");
@@ -47,6 +48,7 @@ const sessionsViewPaneDescriptor: IViewDescriptor = {
 	canToggleVisibility: true,
 	canMoveView: false,
 	ctorDescriptor: new SyncDescriptor(SessionsView),
+	when: ProductManagerModeContext.negate(),
 	windowEnablement: WindowEnablement.Sessions
 };
 

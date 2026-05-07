@@ -69,6 +69,25 @@
 	display: none;
 }
 
+.agent-sessions-workbench.product-manager-workbench.shell-gradient-background::before {
+	background:
+		radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--vscode-button-background) 26%, transparent 74%) 0%, transparent 40%),
+		radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--vscode-textLink-foreground) 18%, transparent 82%) 0%, transparent 42%),
+		linear-gradient(180deg, color-mix(in srgb, var(--vscode-sideBar-background) 82%, white 18%), color-mix(in srgb, var(--vscode-editor-background) 90%, white 10%));
+}
+
+.agent-sessions-workbench.product-manager-workbench .part.sidebar,
+.agent-sessions-workbench.product-manager-workbench .part.auxiliarybar,
+.agent-sessions-workbench.product-manager-workbench .part.chatbar {
+	backdrop-filter: blur(14px);
+}
+
+.agent-sessions-workbench.product-manager-workbench .part.sidebar > .content,
+.agent-sessions-workbench.product-manager-workbench .part.auxiliarybar > .content,
+.agent-sessions-workbench.product-manager-workbench .part.chatbar > .content {
+	border-radius: 18px;
+}
+
 .monaco-workbench.agent-sessions-workbench > .notifications-center {
 	right: 15px;
 	bottom: 15px;

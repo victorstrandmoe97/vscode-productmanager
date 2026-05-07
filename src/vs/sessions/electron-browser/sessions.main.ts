@@ -68,6 +68,7 @@ import { IWorkspaceEditingService } from '../../workbench/services/workspaces/co
 import { ConfigurationService } from '../services/configuration/browser/configurationService.js';
 import { SessionsWorkspaceContextService } from '../services/workspace/browser/workspaceContextService.js';
 import { getWorkspaceIdentifier } from '../../workbench/services/workspaces/browser/workspaces.js';
+import { isProductManagerEnabled } from '../services/productManager/common/productManager.js';
 
 export class SessionsMain extends Disposable {
 
@@ -124,7 +125,7 @@ export class SessionsMain extends Disposable {
 
 		// Create Agentic Workbench
 		const workbench = new AgenticWorkbench(mainWindow.document.body, {
-			extraClasses: this.getExtraClasses(),
+			extraClasses: this.getExtraClasses(services.configurationService),
 		}, services.serviceCollection, services.logService);
 
 		// Listeners
@@ -154,12 +155,18 @@ export class SessionsMain extends Disposable {
 		applyZoom(zoomLevel, mainWindow);
 	}
 
-	private getExtraClasses(): string[] {
+	private getExtraClasses(configurationService: IConfigurationService): string[] {
+		const extraClasses: string[] = [];
+
 		if (isMacintosh && isTahoeOrNewer(this.configuration.os.release)) {
-			return ['macos-tahoe'];
+			extraClasses.push('macos-tahoe');
 		}
 
-		return [];
+		if (isProductManagerEnabled(configurationService)) {
+			extraClasses.push('product-manager-workbench');
+		}
+
+		return extraClasses;
 	}
 
 	private registerListeners(workbench: AgenticWorkbench, storageService: NativeWorkbenchStorageService): void {

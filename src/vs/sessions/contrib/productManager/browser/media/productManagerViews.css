@@ -1,0 +1,206 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.product-manager-view {
+	height: 100%;
+	padding: 12px 14px 16px;
+	color: var(--vscode-editor-foreground);
+	overflow: auto;
+}
+
+.product-manager-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.product-manager-card {
+	background: color-mix(in srgb, var(--vscode-editor-background) 92%, white 8%);
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 75%, transparent 25%);
+	border-radius: 16px;
+	padding: 14px;
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.06);
+}
+
+.product-manager-hero {
+	background:
+		radial-gradient(circle at top right, color-mix(in srgb, var(--vscode-button-background) 22%, transparent 78%), transparent 48%),
+		linear-gradient(160deg, color-mix(in srgb, var(--vscode-editor-background) 88%, white 12%), color-mix(in srgb, var(--vscode-sideBar-background) 72%, white 28%));
+}
+
+.product-manager-kicker {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--vscode-descriptionForeground) 80%, var(--vscode-button-background) 20%);
+	margin-bottom: 8px;
+}
+
+.product-manager-title {
+	font-size: 22px;
+	line-height: 1.2;
+	font-weight: 700;
+	margin: 0 0 8px;
+}
+
+.product-manager-body {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--vscode-descriptionForeground);
+	margin: 0;
+}
+
+.product-manager-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.product-manager-list-item {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-button-background) 10%);
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 70%, transparent 30%);
+}
+
+.product-manager-list-title-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.product-manager-list-title {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.product-manager-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border-radius: 999px;
+	padding: 2px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-badge-foreground);
+	background: var(--vscode-badge-background);
+}
+
+.product-manager-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.product-manager-chip {
+	display: inline-flex;
+	align-items: center;
+	border-radius: 999px;
+	padding: 3px 8px;
+	font-size: 11px;
+	color: color-mix(in srgb, var(--vscode-editor-foreground) 78%, var(--vscode-button-background) 22%);
+	background: color-mix(in srgb, var(--vscode-button-background) 14%, transparent 86%);
+	border: 1px solid color-mix(in srgb, var(--vscode-button-background) 28%, transparent 72%);
+}
+
+.product-manager-section-title {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 10px;
+}
+
+.product-manager-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+/* Architecture lane list */
+.product-manager-arch-status-row {
+	margin-bottom: 10px;
+}
+
+.product-manager-lane-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.product-manager-lane-row {
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 70%, transparent 30%);
+	border-radius: 12px;
+	overflow: hidden;
+	background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-button-background) 10%);
+}
+
+.product-manager-lane-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.product-manager-lane-header:hover {
+	background: color-mix(in srgb, var(--vscode-list-hoverBackground) 60%, transparent 40%);
+}
+
+.product-manager-chevron {
+	font-size: 11px;
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+	width: 12px;
+	text-align: center;
+	transition: transform 150ms ease;
+}
+
+.product-manager-lane-row.expanded > .product-manager-lane-header > .product-manager-chevron {
+	transform: rotate(0deg);
+}
+
+.product-manager-lane-files {
+	padding: 8px 12px 12px 32px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 50%, transparent 50%);
+}
+
+/* File list inside expanded lane */
+.product-manager-file-list {
+	margin: 8px 0 0;
+	padding: 0;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: 240px;
+	overflow-y: auto;
+}
+
+.product-manager-file-item {
+	font-family: monospace;
+	font-size: 11px;
+	line-height: 1.6;
+	color: color-mix(in srgb, var(--vscode-editor-foreground) 75%, var(--vscode-descriptionForeground) 25%);
+	padding: 1px 4px;
+	border-radius: 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.product-manager-file-item:hover {
+	background: color-mix(in srgb, var(--vscode-list-hoverBackground) 50%, transparent 50%);
+}

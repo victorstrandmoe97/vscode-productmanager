@@ -5,6 +5,7 @@
 
 import '../../../workbench/browser/parts/titlebar/media/titlebarpart.css';
 import './media/titlebarpart.css';
+import { localize } from '../../../nls.js';
 import { MultiWindowParts, Part } from '../../../workbench/browser/part.js';
 import { ITitleService } from '../../../workbench/services/title/browser/titleService.js';
 import { getZoomFactor, isWCOEnabled, getWCOTitlebarAreaRect, isFullscreen, onDidChangeFullscreen } from '../../../base/browser/browser.js';
@@ -30,9 +31,10 @@ import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
 import { safeIntl } from '../../../base/common/date.js';
 import { ITitlebarPart, ITitleProperties, ITitleVariable, IAuxiliaryTitlebarPart } from '../../../workbench/browser/parts/titlebar/titlebarPart.js';
 import { Menus } from '../menus.js';
-import { IsNewChatSessionContext } from '../../common/contextkeys.js';
+import { IsNewChatSessionContext, ProductManagerModeContext } from '../../common/contextkeys.js';
 
 const commandCenterContextKeys = new Set([IsNewChatSessionContext.key]);
+const titlebarContextKeys = new Set([ProductManagerModeContext.key]);
 
 /**
  * Simplified agent sessions titlebar part.
@@ -226,6 +228,9 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 			if (e.affectsSome(commandCenterContextKeys)) {
 				centerToolbar.refresh();
 			}
+			if (e.affectsSome(titlebarContextKeys)) {
+				this.updateProductManagerMode();
+			}
 		}));
 
 		// Right toolbar (driven by Menus.TitleBarRightLayout - includes layout actions)
@@ -253,6 +258,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		}));
 
 		this.updateStyles();
+		this.updateProductManagerMode();
 
 		return this.element;
 	}
@@ -270,6 +276,18 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 			const titleForeground = this.getColor(agentsPanelForeground);
 			this.element.style.color = titleForeground || '';
 		}
+	}
+
+	private updateProductManagerMode(): void {
+		if (!this.rootContainer) {
+			return;
+		}
+
+		const enabled = this.contextKeyService.getContextKeyValue<boolean>(ProductManagerModeContext.key) === true;
+		this.rootContainer.classList.toggle('product-manager-titlebar', enabled);
+		this.rootContainer.setAttribute('aria-label', enabled
+			? localize('productManagerTitlebarAriaLabel', "Product Manager Title Bar")
+			: localize('sessionsTitlebarAriaLabel', "Sessions Title Bar"));
 	}
 
 	private onContextMenu(e: MouseEvent): void {

@@ -53,6 +53,7 @@ import { IHistoryNavigationWidget } from '../../../../base/browser/history.js';
 import { registerAndCreateHistoryNavigationContext, IHistoryNavigationContext } from '../../../../platform/history/browser/contextScopedHistoryWidget.js';
 import { autorun, IObservable } from '../../../../base/common/observable.js';
 import { ChatInputNotificationWidget } from '../../../../workbench/contrib/chat/browser/widget/input/chatInputNotificationWidget.js';
+import { isProductManagerEnabled } from '../../../services/productManager/common/productManager.js';
 
 
 const STORAGE_KEY_DRAFT_STATE = 'sessions.draftState';
@@ -87,14 +88,22 @@ const RANDOM_PLACEHOLDERS = [
 	localize('sessionsChatInput.placeholder.describeYourMission', "Describe your mission"),
 ];
 
+const PRODUCT_MANAGER_PLACEHOLDERS = [
+	localize('productManagerChatInput.placeholder.customerOutcome', "What customer outcome are you exploring?"),
+	localize('productManagerChatInput.placeholder.featureBreakdown', "Which feature should we break down?"),
+	localize('productManagerChatInput.placeholder.deliveryRisk', "What delivery risk do you want to understand?"),
+	localize('productManagerChatInput.placeholder.workflow', "Which workflow should Product Mode map for you?"),
+	localize('productManagerChatInput.placeholder.backlogTheme', "What backlog item or product theme should we inspect?"),
+];
+
 let lastPlaceholderIndex = -1;
-function getRandomChatInputPlaceholder(): string {
-	let index = Math.floor(Math.random() * RANDOM_PLACEHOLDERS.length);
+function getRandomChatInputPlaceholder(placeholders: readonly string[]): string {
+	let index = Math.floor(Math.random() * placeholders.length);
 	if (index === lastPlaceholderIndex) {
-		index = (index + 1) % RANDOM_PLACEHOLDERS.length;
+		index = (index + 1) % placeholders.length;
 	}
 	lastPlaceholderIndex = index;
-	return RANDOM_PLACEHOLDERS[index];
+	return placeholders[index];
 }
 
 // #region --- New Chat Widget ---
@@ -290,7 +299,9 @@ export class NewChatInputWidget extends Disposable implements IHistoryNavigation
 			...getSimpleEditorOptions(this.configurationService),
 			readOnly: false,
 			ariaLabel: this._getAriaLabel(),
-			placeholder: this.options.placeholder ?? getRandomChatInputPlaceholder(),
+			placeholder: this.options.placeholder ?? getRandomChatInputPlaceholder(
+				isProductManagerEnabled(this.configurationService) ? PRODUCT_MANAGER_PLACEHOLDERS : RANDOM_PLACEHOLDERS
+			),
 			fontFamily: 'system-ui, -apple-system, sans-serif',
 			fontSize: 13,
 			lineHeight: 20,
