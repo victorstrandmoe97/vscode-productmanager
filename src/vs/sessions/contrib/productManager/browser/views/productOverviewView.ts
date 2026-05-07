@@ -89,16 +89,5 @@ export class ProductOverviewView extends ViewPane {
 			dom.append(artifactsCard, dom.$('span.product-manager-tag', undefined, localize('productArtifactsGeneratedAt', "Generated {0}", artifactsState.generatedAt)));
 		}
 
-		const nextCard = dom.append(stack, dom.$('.product-manager-card'));
-		dom.append(nextCard, dom.$('.product-manager-section-title', undefined, localize('comingIntoView', "Coming Into View")));
-		const chips = dom.append(nextCard, dom.$('.product-manager-chip-row'));
-		for (const label of [
-			localize('architectureChip', "Architecture Coverage"),
-			localize('featureChip', "Feature Breakdown"),
-			localize('jiraChip', "Issue Intelligence"),
-			localize('marketChip', "Market Context"),
-		]) {
-			dom.append(chips, dom.$('.product-manager-chip', undefined, label));
-		}
 	}
 }

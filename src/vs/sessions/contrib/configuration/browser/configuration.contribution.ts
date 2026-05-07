@@ -11,6 +11,7 @@ import {
 	PRODUCT_MANAGER_ESTIMATOR_URL_SETTING,
 	PRODUCT_MANAGER_REPO_ID_SETTING,
 	PRODUCT_MANAGER_REPO_URL_SETTING,
+	PRODUCT_MANAGER_REPOS_PATH_SETTING,
 } from '../../../services/productManager/common/productManager.js';
 
 const configurationRegistry = Registry.as<IConfigurationRegistry>(Extensions.Configuration);
@@ -39,6 +40,11 @@ configurationRegistry.registerConfiguration({
 			type: 'string',
 			default: '',
 			description: localize('productManagerRepoUrl', "GitHub repository URL connected to the complexity-estimator. Set automatically when you connect a repository."),
+		},
+		[PRODUCT_MANAGER_REPOS_PATH_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('productManagerReposPath', "Absolute path to the local repos directory (bind-mounted Docker volume). Leave empty to auto-detect from the complexity-estimator directory."),
 		},
 	}
 });

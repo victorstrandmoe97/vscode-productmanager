@@ -11,6 +11,7 @@ export const PRODUCT_MANAGER_MODE_SETTING = 'sessions.productManager.enabled';
 export const PRODUCT_MANAGER_ESTIMATOR_URL_SETTING = 'sessions.productManager.estimatorUrl';
 export const PRODUCT_MANAGER_REPO_ID_SETTING = 'sessions.productManager.repoId';
 export const PRODUCT_MANAGER_REPO_URL_SETTING = 'sessions.productManager.repoUrl';
+export const PRODUCT_MANAGER_REPOS_PATH_SETTING = 'sessions.productManager.localReposPath';
 
 export const CONNECT_JIRA_COMMAND_ID = 'workbench.action.productManager.connectJira';
 export const CONNECT_CRM_COMMAND_ID = 'workbench.action.productManager.connectCrm';
@@ -43,10 +44,16 @@ export interface IProductManagerLaneModel {
 	readonly weight?: number;
 }
 
+export interface IUserStory {
+	readonly title: string;
+	readonly description: string;
+}
+
 export interface IProductManagerFeatureModel {
 	readonly title: string;
 	readonly summary: string;
 	readonly lanes: readonly ProductManagerLaneId[];
+	readonly userStories?: readonly IUserStory[];
 }
 
 export interface IProductManagerJiraModel {
@@ -83,6 +90,7 @@ export interface IProductManagerDataService {
 	connectRepository(repoUrl: string, githubToken?: string, githubUsername?: string): Promise<void>;
 	disconnectRepository(): Promise<void>;
 	recookAndRefresh(): Promise<void>;
+	discoverFeatures(): Promise<void>;
 }
 
 export const IProductManagerDataService = createDecorator<IProductManagerDataService>('productManagerDataService');

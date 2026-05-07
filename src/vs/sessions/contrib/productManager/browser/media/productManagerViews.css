@@ -202,3 +202,41 @@
 .product-manager-file-item:hover {
 	background: color-mix(in srgb, var(--vscode-list-hoverBackground) 50%, transparent 50%);
 }
+
+/* Actions row below intro text */
+.product-manager-actions-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+/* User story list inside feature card */
+.product-manager-user-story-label {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	margin: 10px 0 4px;
+}
+
+.product-manager-user-story-list {
+	margin: 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.product-manager-user-story {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--vscode-editor-foreground);
+}
+
+.product-manager-user-story-title {
+	font-weight: 600;
+}
+
+.product-manager-user-story-description {
+	color: var(--vscode-descriptionForeground);
+}
