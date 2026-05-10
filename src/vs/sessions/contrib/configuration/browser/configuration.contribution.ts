@@ -9,6 +9,10 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import {
 	PRODUCT_MANAGER_MODE_SETTING,
 	PRODUCT_MANAGER_ESTIMATOR_URL_SETTING,
+	PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING,
+	PRODUCT_MANAGER_JIRA_JQL_SETTING,
+	PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING,
+	PRODUCT_MANAGER_JIRA_SITE_URL_SETTING,
 	PRODUCT_MANAGER_REPO_ID_SETTING,
 	PRODUCT_MANAGER_REPO_URL_SETTING,
 	PRODUCT_MANAGER_REPOS_PATH_SETTING,
@@ -45,6 +49,29 @@ configurationRegistry.registerConfiguration({
 			type: 'string',
 			default: '',
 			description: localize('productManagerReposPath', "Absolute path to the local repos directory (bind-mounted Docker volume). Leave empty to auto-detect from the complexity-estimator directory."),
+		},
+		[PRODUCT_MANAGER_JIRA_SITE_URL_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('productManagerJiraSiteUrl', "Jira Cloud site URL connected to Product Mode. Set automatically when you connect Jira."),
+		},
+		[PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING]: {
+			type: 'array',
+			default: [],
+			items: {
+				type: 'string',
+			},
+			description: localize('productManagerJiraProjectKeys', "Jira project keys selected for Product Mode issue sync."),
+		},
+		[PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('productManagerJiraFilterId', "Optional Jira filter ID used by Product Mode issue sync."),
+		},
+		[PRODUCT_MANAGER_JIRA_JQL_SETTING]: {
+			type: 'string',
+			default: '',
+			description: localize('productManagerJiraJql', "Optional custom JQL appended to the Product Mode Jira sync query."),
 		},
 	}
 });

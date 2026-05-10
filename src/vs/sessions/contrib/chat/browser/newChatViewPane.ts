@@ -6,6 +6,7 @@
 import './media/chatWidget.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { derived } from '../../../../base/common/observable.js';
 import { isWeb } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -31,7 +32,7 @@ import { WorkspacePicker, IWorkspaceSelection } from './sessionWorkspacePicker.j
 import { WebWorkspacePicker } from './webWorkspacePicker.js';
 import { NewChatInputWidget } from './newChatInput.js';
 import { IChatRequestVariableEntry } from '../../../../workbench/contrib/chat/common/attachments/chatVariableEntries.js';
-import { isProductManagerEnabled, OPEN_DISCOVER_CHAT_COMMAND_ID, PRODUCT_MANAGER_REPO_URL_SETTING } from '../../../services/productManager/common/productManager.js';
+import { CONFIGURE_CLAUDE_COMMAND_ID, CONFIGURE_OPENAI_AZURE_COMMAND_ID, isProductManagerEnabled, OPEN_DISCOVER_CHAT_COMMAND_ID, OPEN_LOCAL_CHAT_COMMAND_ID, PRODUCT_MANAGER_REPO_URL_SETTING } from '../../../services/productManager/common/productManager.js';
 import { PRODUCT_MANAGER_ARCHITECTURE_VIEW_ID } from '../../productManager/browser/productManager.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 
@@ -361,11 +362,26 @@ class NewChatWidget extends Disposable {
 		if (repoUrl) {
 			const repoName = this._getConnectedRepoName(repoUrl);
 			title.textContent = localize('productSetupDiscoverTitle', "Open Discover Chat for {0}", repoName);
-			body.textContent = localize('productSetupDiscoverBody', "Product Mode is holding the chat surface here until the repository is opened as a GitHub-backed Discover session.");
+			body.textContent = localize('productSetupDiscoverBody', "Linked repositories default to a Cloud-backed Discover chat. Choose Discover for no-clone product exploration, or switch to a local checkout to unlock local Copilot and Claude-style sessions.");
 
 			const openDiscoverButton = dom.append(actions, dom.$('button.product-setup-button.product-setup-button-primary', { type: 'button' }, localize('productSetupOpenDiscover', "Open Discover Chat")));
 			this._setupActionDisposables.add(dom.addDisposableListener(openDiscoverButton, dom.EventType.CLICK, () => {
 				void this.commandService.executeCommand(OPEN_DISCOVER_CHAT_COMMAND_ID);
+			}));
+
+			const openLocalButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupOpenLocal', "Use Local Checkout")));
+			this._setupActionDisposables.add(dom.addDisposableListener(openLocalButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(OPEN_LOCAL_CHAT_COMMAND_ID);
+			}));
+
+			const configureOpenAIButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupConfigureOpenAI', "Configure OpenAI / Azure")));
+			this._setupActionDisposables.add(dom.addDisposableListener(configureOpenAIButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(CONFIGURE_OPENAI_AZURE_COMMAND_ID);
+			}));
+
+			const configureClaudeButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupConfigureClaude', "Configure Claude")));
+			this._setupActionDisposables.add(dom.addDisposableListener(configureClaudeButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(CONFIGURE_CLAUDE_COMMAND_ID);
 			}));
 
 			const changeRepoButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupOpenArchitecture', "Open Architecture Setup")));
@@ -374,22 +390,32 @@ class NewChatWidget extends Disposable {
 			}));
 		} else {
 			title.textContent = localize('productSetupConnectTitle', "Connect a Repository to Start Product Chat");
-			body.textContent = localize('productSetupConnectBody', "Product Mode keeps the chat area in setup mode until a repository is connected and opened as a GitHub-backed Discover session.");
+			body.textContent = localize('productSetupConnectBody', "Product Mode keeps the chat area in setup mode until a repository is connected. After that, you can stay in Cloud for discover-mode or switch to a local checkout for Copilot or Claude-style sessions.");
 
 			const openArchitectureButton = dom.append(actions, dom.$('button.product-setup-button.product-setup-button-primary', { type: 'button' }, localize('productSetupConnectButton', "Open Architecture Setup")));
 			this._setupActionDisposables.add(dom.addDisposableListener(openArchitectureButton, dom.EventType.CLICK, () => {
 				void this.viewsService.openView(PRODUCT_MANAGER_ARCHITECTURE_VIEW_ID, true);
 			}));
+
+			const configureOpenAIButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupConfigureOpenAI', "Configure OpenAI / Azure")));
+			this._setupActionDisposables.add(dom.addDisposableListener(configureOpenAIButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(CONFIGURE_OPENAI_AZURE_COMMAND_ID);
+			}));
+
+			const configureClaudeButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupConfigureClaude', "Configure Claude")));
+			this._setupActionDisposables.add(dom.addDisposableListener(configureClaudeButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(CONFIGURE_CLAUDE_COMMAND_ID);
+			}));
 		}
 	}
 
 	private _isProductSetupActive(): boolean {
-		return this.isProductManagerMode && !this._isGitHubRemoteWorkspaceSelected();
+		return this.isProductManagerMode && !this._isProductWorkspaceSelected();
 	}
 
-	private _isGitHubRemoteWorkspaceSelected(): boolean {
+	private _isProductWorkspaceSelected(): boolean {
 		const repoUri = this._workspacePicker.selectedProject?.workspace.repositories[0]?.uri;
-		return repoUri?.scheme === GITHUB_REMOTE_FILE_SCHEME;
+		return repoUri?.scheme === GITHUB_REMOTE_FILE_SCHEME || repoUri?.scheme === Schemas.file;
 	}
 
 	private _getConnectedRepoName(repoUrl: string): string {

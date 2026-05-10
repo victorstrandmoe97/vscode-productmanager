@@ -58,6 +58,7 @@ export class ProductOverviewView extends ViewPane {
 		const overview = this.productManagerDataService.getOverview();
 		const artifactsState = this.productManagerDataService.getArtifactsState();
 		const featuresMetadata = this.productManagerDataService.getFeaturesMetadata();
+		const jira = this.productManagerDataService.getJira();
 		const stack = dom.append(this.bodyContainer, dom.$('.product-manager-stack'));
 
 		// Hero card
@@ -91,7 +92,7 @@ export class ProductOverviewView extends ViewPane {
 
 		// Artifacts Status — compact chip summary
 		const artifactsCard = dom.append(stack, dom.$('.product-manager-card'));
-		dom.append(artifactsCard, dom.$('.product-manager-section-title', undefined, localize('productArtifactsStatus', "Artifacts Status")));
+		dom.append(artifactsCard, dom.$('.product-manager-section-title', undefined, localize('productArtifactsStatus', "Status")));
 
 		const chipRow = dom.append(artifactsCard, dom.$('.product-manager-status-chip-row'));
 
@@ -124,6 +125,20 @@ export class ProductOverviewView extends ViewPane {
 		} else {
 			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--pending', undefined,
 				localize('featChipPending', "Features · not discovered")));
+		}
+
+		if (jira.connection.status === 'connected') {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--ready', undefined,
+				localize('jiraChipReady', "Jira · {0} issues · {1} unmapped", jira.issueCount, jira.unmappedIssueCount)));
+		} else if (jira.connection.status === 'connecting' || jira.sync.status === 'syncing') {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--loading', undefined,
+				localize('jiraChipLoading', "Jira · syncing…")));
+		} else if (jira.connection.status === 'error' || jira.connection.status === 'expired' || jira.sync.status === 'error') {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--error', undefined,
+				localize('jiraChipError', "Jira · attention needed")));
+		} else {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--pending', undefined,
+				localize('jiraChipPending', "Jira · not connected")));
 		}
 	}
 

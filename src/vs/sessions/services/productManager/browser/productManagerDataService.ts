@@ -14,12 +14,20 @@ import { getHoversPromise } from '../../../../editor/contrib/hover/browser/getHo
 import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { IJiraAuthService, IJiraMappingService, IJiraSyncService } from '../common/jira.js';
 import {
+	IJiraConnectOptions,
+	IJiraConnectionState,
+	IJiraIssue,
+	IJiraMappingCandidate,
+	IJiraSyncState,
 	IProductManagerArtifactsState,
 	IProductManagerDataService,
 	IProductManagerFeatureModel,
@@ -29,7 +37,12 @@ import {
 	IProductManagerMarketModel,
 	IProductManagerOverviewModel,
 	IUserStory,
+	OPEN_DISCOVER_CHAT_COMMAND_ID,
 	PRODUCT_MANAGER_ESTIMATOR_URL_SETTING,
+	PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING,
+	PRODUCT_MANAGER_JIRA_JQL_SETTING,
+	PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING,
+	PRODUCT_MANAGER_JIRA_SITE_URL_SETTING,
 	PRODUCT_MANAGER_REPO_ID_SETTING,
 	PRODUCT_MANAGER_REPO_URL_SETTING,
 	PRODUCT_MANAGER_REPOS_PATH_SETTING,
@@ -66,6 +79,12 @@ const defaultJira: IProductManagerJiraModel = {
 		localize('jiraChecklistEstimator', "Attach estimator output per issue."),
 		localize('jiraChecklistPrompts', "Open product-thread prompts directly from issue rows."),
 	],
+	connection: { status: 'disconnected' },
+	sync: { status: 'idle' },
+	selectedProjects: [],
+	issueCount: 0,
+	issues: [],
+	unmappedIssueCount: 0,
 };
 
 const defaultMarket: IProductManagerMarketModel = {
@@ -145,6 +164,10 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private features: readonly IProductManagerFeatureModel[] = defaultFeatures;
 	private _featuresMetadata: IProductManagerFeaturesMetadata | undefined;
 	private jira = defaultJira;
+	private jiraIssues: readonly IJiraIssue[] = [];
+	private jiraMappings: readonly IJiraMappingCandidate[] = [];
+	private jiraConnection: IJiraConnectionState = defaultJira.connection;
+	private jiraSync: IJiraSyncState = defaultJira.sync;
 	private market = defaultMarket;
 
 	/** In-memory GitHub credentials for the current session — used by recookAndRefresh. */
@@ -155,6 +178,9 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private static readonly FEATURES_METADATA_STORAGE_KEY = 'productManager.featuresMetadata';
 
 	constructor(
+		@IJiraAuthService private readonly jiraAuthService: IJiraAuthService,
+		@IJiraSyncService private readonly jiraSyncService: IJiraSyncService,
+		@IJiraMappingService private readonly jiraMappingService: IJiraMappingService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IStorageService private readonly storageService: IStorageService,
@@ -162,16 +188,30 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		@ITextModelService private readonly textModelService: ITextModelService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@ILanguageModelsService private readonly languageModelsService: ILanguageModelsService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super();
 
 		// Restore persisted features from previous session.
 		this._restoreFeatures();
+		void this._restoreJiraState();
 
 		// Auto-load architecture from API on startup if a repo is already configured.
 		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
 		if (repoId) {
 			void this.fetchArchitectureFromApi();
+		}
+	}
+
+	private async _restoreJiraState(): Promise<void> {
+		this.jiraConnection = await this.jiraAuthService.getConnectionState();
+		this.updateJiraModel();
+		this._onDidChange.fire();
+		if (this.jiraConnection.status === 'connected') {
+			void this.refreshJira().catch(error => {
+				this.logService.error('[ProductManagerDataService] _restoreJiraState: refresh failed', error);
+			});
 		}
 	}
 
@@ -243,6 +283,128 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 
 	getMarket(): IProductManagerMarketModel {
 		return this.market;
+	}
+
+	async connectJira(options: IJiraConnectOptions): Promise<void> {
+		this.logService.info('[ProductManagerDataService] connectJira: site=%s projects=%d', options.siteUrl, options.projectKeys.length);
+		this.jiraConnection = {
+			status: 'connecting',
+			siteUrl: options.siteUrl,
+			accountEmail: options.email,
+		};
+		this.jiraSync = {
+			status: 'idle',
+			message: localize('jiraConnectStarting', "Connecting Jira…"),
+		};
+		this.updateJiraModel();
+		this._onDidChange.fire();
+
+		try {
+			await this.jiraAuthService.connect(options);
+			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_SITE_URL_SETTING, options.siteUrl.trim(), ConfigurationTarget.USER);
+			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING, [...options.projectKeys], ConfigurationTarget.USER);
+			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING, options.filterId ?? '', ConfigurationTarget.USER);
+			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_JQL_SETTING, options.jql ?? '', ConfigurationTarget.USER);
+			this.jiraConnection = await this.jiraAuthService.validateSession();
+			await this.refreshJira({ full: true });
+		} catch (error) {
+			this.logService.error('[ProductManagerDataService] connectJira failed:', error);
+			this.jiraConnection = {
+				status: 'error',
+				siteUrl: options.siteUrl,
+				accountEmail: options.email,
+				lastError: error instanceof Error ? error.message : String(error),
+			};
+			this.jiraSync = {
+				status: 'error',
+				lastError: error instanceof Error ? error.message : String(error),
+				message: localize('jiraConnectFailed', "Jira connection failed."),
+			};
+			this.updateJiraModel();
+			this._onDidChange.fire();
+		}
+	}
+
+	async disconnectJira(): Promise<void> {
+		this.logService.info('[ProductManagerDataService] disconnectJira');
+		await this.jiraAuthService.disconnect();
+		await this.jiraSyncService.clear();
+		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_SITE_URL_SETTING, '', ConfigurationTarget.USER);
+		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING, [], ConfigurationTarget.USER);
+		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING, '', ConfigurationTarget.USER);
+		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_JQL_SETTING, '', ConfigurationTarget.USER);
+		this.jiraConnection = { status: 'disconnected' };
+		this.jiraSync = { status: 'idle' };
+		this.jiraIssues = [];
+		this.jiraMappings = [];
+		this.updateJiraModel();
+		this._onDidChange.fire();
+	}
+
+	async refreshJira(options?: { full?: boolean }): Promise<void> {
+		this.logService.info('[ProductManagerDataService] refreshJira: full=%s', options?.full === true);
+		this.jiraConnection = await this.jiraAuthService.validateSession();
+		if (this.jiraConnection.status !== 'connected') {
+			this.jiraSync = {
+				status: 'error',
+				lastError: this.jiraConnection.lastError,
+				message: this.jiraConnection.lastError ?? localize('jiraRefreshNoConnection', "Connect Jira before refreshing."),
+			};
+			this.updateJiraModel();
+			this._onDidChange.fire();
+			return;
+		}
+
+		this.jiraSync = {
+			status: 'syncing',
+			lastSyncStartedAt: new Date().toISOString(),
+			message: localize('jiraRefreshing', "Refreshing Jira issues…"),
+		};
+		this.updateJiraModel();
+		this._onDidChange.fire();
+
+		try {
+			const syncResult = await this.jiraSyncService.refresh(options);
+			this.jiraIssues = syncResult.issues;
+			this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
+			this.jiraSync = syncResult.sync;
+			this.jiraConnection = await this.jiraAuthService.validateSession();
+			this.updateJiraModel();
+			this._onDidChange.fire();
+		} catch (error) {
+			this.logService.error('[ProductManagerDataService] refreshJira failed:', error);
+			this.jiraSync = {
+				status: 'error',
+				lastSyncStartedAt: this.jiraSync.lastSyncStartedAt,
+				lastError: error instanceof Error ? error.message : String(error),
+				message: localize('jiraRefreshFailed', "Failed to refresh Jira issues."),
+			};
+			this.updateJiraModel();
+			this._onDidChange.fire();
+		}
+	}
+
+	async openJiraIssue(issueKey: string): Promise<void> {
+		const issue = this.getIssueByKey(issueKey);
+		if (!issue) {
+			this.logService.warn('[ProductManagerDataService] openJiraIssue: missing issue=%s', issueKey);
+			return;
+		}
+
+		await this.openerService.open(URI.parse(issue.url), { openExternal: true });
+	}
+
+	async askCopilotAboutJiraIssue(issueKey: string): Promise<void> {
+		const issue = this.getIssueByKey(issueKey);
+		if (!issue) {
+			this.logService.warn('[ProductManagerDataService] askCopilotAboutJiraIssue: missing issue=%s', issueKey);
+			return;
+		}
+
+		const mapping = this.jiraMappings.find(candidate => candidate.issueKey === issue.key);
+		await this.commandService.executeCommand(OPEN_DISCOVER_CHAT_COMMAND_ID, {
+			query: this.buildJiraIssueChatPrompt(issue, mapping),
+		});
 	}
 
 	async connectRepository(repoUrl: string, githubToken?: string, githubUsername?: string): Promise<void> {
@@ -370,6 +532,8 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		this._featuresMetadata = undefined;
 		this.storageService.remove(ProductManagerDataService.FEATURES_STORAGE_KEY, StorageScope.APPLICATION);
 		this.storageService.remove(ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY, StorageScope.APPLICATION);
+		this.jiraMappings = [];
+		this.updateJiraModel();
 		this.artifactsState = {
 			status: 'notGenerated',
 			message: localize('repositoryDisconnected', "Repository disconnected. Connect a GitHub repository to load the architecture map."),
@@ -497,6 +661,10 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 				generatedAt: data.generated_at,
 				fileCount: data.file_count,
 			};
+			if (this.jiraIssues.length > 0) {
+				this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
+				this.updateJiraModel();
+			}
 			this.logService.info('[ProductManagerDataService] fetchArchitectureFromApi: loaded %d lanes, %d total files', data.lanes.length, data.file_count);
 		} catch (error) {
 			this.logService.error('[ProductManagerDataService] fetchArchitectureFromApi failed:', error);
@@ -629,6 +797,10 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 
 		this.logService.info('[ProductManagerDataService] discoverFeatures: complete — %d features, %d user stories, %d symbols across %d files',
 			this.features.length, totalUserStories, totalSymbols, totalFiles);
+		if (this.jiraIssues.length > 0) {
+			this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
+			this.updateJiraModel();
+		}
 		this._persistFeatures();
 		this._onDidChange.fire();
 	}
@@ -741,6 +913,75 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 
 		// Last resort: relative to cwd
 		return './complexity-estimator/repos';
+	}
+
+	private updateJiraModel(): void {
+		const selectedProjects = this.configurationService.getValue<string[]>(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING) ?? [];
+		const issueModels = this.jiraIssues.map(issue => ({
+			issue,
+			mapping: this.jiraMappings.find(candidate => candidate.issueKey === issue.key),
+		}));
+		const unmappedIssueCount = issueModels.filter(issue => !issue.mapping || issue.mapping.lanes.length === 0).length;
+		this.jira = {
+			summary: this.buildJiraSummary(),
+			callToAction: this.jiraConnection.status === 'connected'
+				? localize('jiraConnectedCallToAction', "Refresh Jira to import the latest backlog context.")
+				: localize('jiraCallToAction', "Connect Jira to start importing backlog context."),
+			checklist: [
+				localize('jiraChecklistImport', "Import issues from CSV or API."),
+				localize('jiraChecklistEstimator', "Attach estimator output per issue."),
+				localize('jiraChecklistPrompts', "Open product-thread prompts directly from issue rows."),
+			],
+			connection: this.jiraConnection,
+			sync: this.jiraSync,
+			selectedProjects,
+			issueCount: issueModels.length,
+			issues: issueModels,
+			unmappedIssueCount,
+		};
+	}
+
+	private buildJiraSummary(): string {
+		if (this.jiraConnection.status === 'connected') {
+			if (this.jiraSync.status === 'syncing') {
+				return localize('jiraSummarySyncing', "Jira is connected. Product Mode is syncing backlog issues now.");
+			}
+			if (this.jiraIssues.length > 0) {
+				const unmappedIssueCount = this.jiraIssues.filter(issue => {
+					const mapping = this.jiraMappings.find(candidate => candidate.issueKey === issue.key);
+					return !mapping || mapping.lanes.length === 0;
+				}).length;
+				return localize('jiraSummaryConnected', "Jira is connected. Product Mode has imported {0} issues and mapped {1} of them onto the current product context.", this.jiraIssues.length, this.jiraIssues.length - unmappedIssueCount);
+			}
+			return localize('jiraSummaryConnectedNoIssues', "Jira is connected. Refresh the sync to import backlog issues for this product.");
+		}
+
+		if (this.jiraConnection.status === 'expired' || this.jiraConnection.status === 'error') {
+			return this.jiraConnection.lastError ?? localize('jiraSummaryError', "Jira needs attention before Product Mode can import backlog context.");
+		}
+
+		return localize('jiraSummary', "Jira is not connected yet. Once connected, Product Mode will import issues, run the local complexity estimator, and render PM-readable summaries.");
+	}
+
+	private getIssueByKey(issueKey: string): IJiraIssue | undefined {
+		return this.jiraIssues.find(issue => issue.key === issueKey);
+	}
+
+	private buildJiraIssueChatPrompt(issue: IJiraIssue, mapping?: IJiraMappingCandidate): string {
+		const lanes = mapping?.lanes.length ? mapping.lanes.join(', ') : 'unmapped';
+		return [
+			`Help me reason about this Jira issue in Product Mode.`,
+			`Issue: ${issue.key} — ${issue.summary}`,
+			`Type: ${issue.issueType}`,
+			`Status: ${issue.status}`,
+			`Priority: ${issue.priority ?? 'n/a'}`,
+			`Labels: ${issue.labels.join(', ') || 'none'}`,
+			`Components: ${issue.components.join(', ') || 'none'}`,
+			`Mapped feature: ${mapping?.featureTitle ?? 'none'}`,
+			`Mapped lanes: ${lanes}`,
+			`Description: ${issue.description || '(no description provided)'}`,
+			`Please explain the likely product impact, delivery risk, and which architecture lanes are most relevant.`,
+		].join('\n');
 	}
 
 	// ---------------------------------------------------------------------------
