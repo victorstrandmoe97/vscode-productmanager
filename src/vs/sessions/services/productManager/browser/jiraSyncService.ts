@@ -5,14 +5,12 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IJiraApiClient, IJiraAuthService, IJiraSearchRequest, IJiraSyncResult, IJiraSyncService } from '../common/jira.js';
 import { IJiraIssue, IJiraSyncState, PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING, PRODUCT_MANAGER_JIRA_JQL_SETTING, PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING } from '../common/productManager.js';
+import { ProductManagerJsonObject } from '../common/repoManifest.js';
+import { IResolvedToolBinding, IToolBindingStateStoreService } from '../common/toolBindings.js';
 
 const LOG_PREFIX = '[JiraSyncService]';
-const JIRA_ISSUES_STORAGE_KEY = 'productManager.jira.issues';
-const JIRA_SYNC_STORAGE_KEY = 'productManager.jira.syncState';
 const DEFAULT_PAGE_SIZE = 50;
 
 export class JiraSyncService extends Disposable implements IJiraSyncService {
@@ -22,16 +20,34 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 	constructor(
 		@IJiraAuthService private readonly jiraAuthService: IJiraAuthService,
 		@IJiraApiClient private readonly jiraApiClient: IJiraApiClient,
-		@IStorageService private readonly storageService: IStorageService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IToolBindingStateStoreService private readonly toolBindingStateStoreService: IToolBindingStateStoreService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 	}
 
-	async refresh(options?: { full?: boolean }): Promise<IJiraSyncResult> {
+	async restore(binding: IResolvedToolBinding): Promise<IJiraSyncResult | undefined> {
+		const cached = await this.toolBindingStateStoreService.loadState<{ issues: readonly IJiraIssue[]; sync: IJiraSyncState }>(binding.cacheKey);
+		if (!cached) {
+			return undefined;
+		}
+
+		const session = await this.jiraAuthService.getSession(binding.profile?.id ?? binding.binding?.profileId);
+		if (!session) {
+			return undefined;
+		}
+
+		return {
+			issues: cached.issues,
+			sync: cached.sync,
+			fieldMap: await this.jiraApiClient.getFieldMap(session),
+		};
+	}
+
+	async refresh(binding: IResolvedToolBinding, options?: { full?: boolean }): Promise<IJiraSyncResult> {
 		const startedAt = new Date().toISOString();
-		const previousState = this.loadSyncState();
+		const previousState = await this.loadSyncState(binding);
+		const cachedIssues = await this.loadCachedIssues(binding);
 		const syncBase: IJiraSyncState = {
 			status: 'syncing',
 			lastSyncStartedAt: startedAt,
@@ -40,15 +56,15 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 			issuesFetched: 0,
 			message: 'Syncing Jira issues…',
 		};
-		this.storeSyncState(syncBase);
+		await this.storeState(binding, { issues: cachedIssues, sync: syncBase });
 
-		const session = await this.jiraAuthService.getSession();
+		const session = await this.jiraAuthService.getSession(binding.profile?.id ?? binding.binding?.profileId);
 		if (!session) {
 			throw new Error('Jira is not connected.');
 		}
 
 		const full = options?.full === true;
-		const searchRequest = this.buildSearchRequest(full, previousState);
+		const searchRequest = this.buildSearchRequest(binding, full, previousState);
 		this.logService.info(`${LOG_PREFIX} refresh: full=%s projects=%d`, full, searchRequest.projectKeys.length);
 
 		const fieldMap = await this.jiraApiClient.getFieldMap(session);
@@ -63,11 +79,14 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 			total = page.total ?? total + page.issues.length;
 			pages.push(...page.issues);
 
-			this.storeSyncState({
+			await this.storeState(binding, {
+				issues: pages,
+				sync: {
 				...syncBase,
 				pagesFetched: pageCount,
 				issuesFetched: pages.length,
 				message: `Fetched ${pages.length} of ${total} Jira issues…`,
+				},
 			});
 
 			if (page.nextPageToken === undefined) {
@@ -77,7 +96,7 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 			nextPageToken = page.nextPageToken;
 		}
 
-		const mergedIssues = full ? pages : this.mergeIssues(this.loadCachedIssues(), pages);
+		const mergedIssues = full ? pages : this.mergeIssues(cachedIssues, pages);
 		const latestWatermark = mergedIssues.reduce<string | undefined>((latest, issue) => {
 			if (!issue.updated) {
 				return latest;
@@ -100,8 +119,7 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 			message: `Imported ${mergedIssues.length} Jira issues.`,
 		};
 
-		this.storeCachedIssues(mergedIssues);
-		this.storeSyncState(syncState);
+		await this.storeState(binding, { issues: mergedIssues, sync: syncState });
 		this.logService.info(`${LOG_PREFIX} refresh: complete issues=%d pages=%d`, mergedIssues.length, pageCount);
 
 		return {
@@ -111,52 +129,39 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 		};
 	}
 
-	async clear(): Promise<void> {
-		this.storageService.remove(JIRA_ISSUES_STORAGE_KEY, StorageScope.APPLICATION);
-		this.storageService.remove(JIRA_SYNC_STORAGE_KEY, StorageScope.APPLICATION);
+	async clear(binding: IResolvedToolBinding): Promise<void> {
+		await this.toolBindingStateStoreService.clearState(binding.cacheKey);
 		this.logService.info(`${LOG_PREFIX} clear`);
 	}
 
-	private loadCachedIssues(): readonly IJiraIssue[] {
-		const raw = this.storageService.get(JIRA_ISSUES_STORAGE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
+	private async loadCachedIssues(binding: IResolvedToolBinding): Promise<readonly IJiraIssue[]> {
+		const cached = await this.toolBindingStateStoreService.loadState<{ issues: readonly IJiraIssue[]; sync: IJiraSyncState }>(binding.cacheKey);
+		if (!cached) {
 			return [];
 		}
 
-		try {
-			return JSON.parse(raw) as IJiraIssue[];
-		} catch (error) {
-			this.logService.error(`${LOG_PREFIX} loadCachedIssues: invalid cache`, error);
-			return [];
-		}
+		return cached.issues;
 	}
 
-	private storeCachedIssues(issues: readonly IJiraIssue[]): void {
-		this.storageService.store(JIRA_ISSUES_STORAGE_KEY, JSON.stringify(issues), StorageScope.APPLICATION, StorageTarget.USER);
-	}
-
-	private loadSyncState(): IJiraSyncState {
-		const raw = this.storageService.get(JIRA_SYNC_STORAGE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
+	private async loadSyncState(binding: IResolvedToolBinding): Promise<IJiraSyncState> {
+		const cached = await this.toolBindingStateStoreService.loadState<{ issues: readonly IJiraIssue[]; sync: IJiraSyncState }>(binding.cacheKey);
+		if (!cached) {
 			return { status: 'idle' };
 		}
 
-		try {
-			return JSON.parse(raw) as IJiraSyncState;
-		} catch (error) {
-			this.logService.error(`${LOG_PREFIX} loadSyncState: invalid state`, error);
-			return { status: 'idle' };
-		}
+		return cached.sync;
 	}
 
-	private storeSyncState(state: IJiraSyncState): void {
-		this.storageService.store(JIRA_SYNC_STORAGE_KEY, JSON.stringify(state), StorageScope.APPLICATION, StorageTarget.USER);
+	private async storeState(binding: IResolvedToolBinding, state: { issues: readonly IJiraIssue[]; sync: IJiraSyncState }): Promise<void> {
+		await this.toolBindingStateStoreService.saveState(binding.cacheKey, state);
 	}
 
-	private buildSearchRequest(full: boolean, state: IJiraSyncState): IJiraSearchRequest {
-		const projectKeys = this.configurationService.getValue<string[]>(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING) ?? [];
-		const filterId = (this.configurationService.getValue<string>(PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING) || '').trim() || undefined;
-		const jql = (this.configurationService.getValue<string>(PRODUCT_MANAGER_JIRA_JQL_SETTING) || '').trim() || undefined;
+	private buildSearchRequest(binding: IResolvedToolBinding, full: boolean, state: IJiraSyncState): IJiraSearchRequest {
+		const selectors = binding.selectors as ProductManagerJsonObject;
+		const projectKeysValue = selectors[PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING] ?? selectors.projectKeys;
+		const projectKeys = Array.isArray(projectKeysValue) ? projectKeysValue.filter((value): value is string => typeof value === 'string' && !!value.trim()) : [];
+		const filterId = this.readStringSelector(selectors, PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING) || this.readStringSelector(selectors, 'filterId') || undefined;
+		const jql = this.readStringSelector(selectors, PRODUCT_MANAGER_JIRA_JQL_SETTING) || this.readStringSelector(selectors, 'jql') || undefined;
 		const updatedSince = !full ? state.lastSuccessfulWatermark : undefined;
 
 		return {
@@ -166,6 +171,11 @@ export class JiraSyncService extends Disposable implements IJiraSyncService {
 			updatedSince,
 			maxResults: DEFAULT_PAGE_SIZE,
 		};
+	}
+
+	private readStringSelector(selectors: ProductManagerJsonObject, key: string): string {
+		const value = selectors[key];
+		return typeof value === 'string' ? value.trim() : '';
 	}
 
 	private mergeIssues(existing: readonly IJiraIssue[], incoming: readonly IJiraIssue[]): readonly IJiraIssue[] {

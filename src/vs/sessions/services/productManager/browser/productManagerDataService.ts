@@ -3,24 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
-import { Position } from '../../../../editor/common/core/position.js';
-import { SymbolKind } from '../../../../editor/common/languages.js';
-import { OutlineModel } from '../../../../editor/contrib/documentSymbols/browser/outlineModel.js';
-import { getHoversPromise } from '../../../../editor/contrib/hover/browser/getHover.js';
-import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
-import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IJiraAuthService, IJiraMappingService, IJiraSyncService } from '../common/jira.js';
 import {
 	IJiraConnectOptions,
@@ -36,18 +26,15 @@ import {
 	IProductManagerLaneModel,
 	IProductManagerMarketModel,
 	IProductManagerOverviewModel,
-	IUserStory,
 	OPEN_DISCOVER_CHAT_COMMAND_ID,
 	PRODUCT_MANAGER_ESTIMATOR_URL_SETTING,
-	PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING,
-	PRODUCT_MANAGER_JIRA_JQL_SETTING,
-	PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING,
-	PRODUCT_MANAGER_JIRA_SITE_URL_SETTING,
+	ProductManagerLaneId,
 	PRODUCT_MANAGER_REPO_ID_SETTING,
 	PRODUCT_MANAGER_REPO_URL_SETTING,
-	PRODUCT_MANAGER_REPOS_PATH_SETTING,
-	ProductManagerLaneId,
 } from '../common/productManager.js';
+import { IRepoManifestService, IProductManagerRepoManifest } from '../common/repoManifest.js';
+import { IContextResolverService, IResolvedProductManagerContext } from '../common/toolBindings.js';
+import { IFeaturesIntegrationService, IProductManagerActivationResult, IProductManagerActivationService } from '../common/toolIntegration.js';
 
 const defaultOverview: IProductManagerOverviewModel = {
 	title: localize('productOverviewTitle', "Product Overview"),
@@ -96,58 +83,6 @@ const defaultMarket: IProductManagerMarketModel = {
 	],
 };
 
-/** Symbol kinds worth querying hover for (functions, methods, classes, interfaces). */
-const HOVER_SYMBOL_KINDS = new Set([
-	SymbolKind.Function,
-	SymbolKind.Method,
-	SymbolKind.Class,
-	SymbolKind.Interface,
-	SymbolKind.Constructor,
-]);
-
-const SYMBOL_KIND_NAMES: Record<number, string> = {
-	[SymbolKind.File]: 'File',
-	[SymbolKind.Module]: 'Module',
-	[SymbolKind.Namespace]: 'Namespace',
-	[SymbolKind.Package]: 'Package',
-	[SymbolKind.Class]: 'Class',
-	[SymbolKind.Method]: 'Method',
-	[SymbolKind.Property]: 'Property',
-	[SymbolKind.Field]: 'Field',
-	[SymbolKind.Constructor]: 'Constructor',
-	[SymbolKind.Enum]: 'Enum',
-	[SymbolKind.Interface]: 'Interface',
-	[SymbolKind.Function]: 'Function',
-	[SymbolKind.Variable]: 'Variable',
-	[SymbolKind.Constant]: 'Constant',
-	[SymbolKind.String]: 'String',
-	[SymbolKind.Number]: 'Number',
-	[SymbolKind.Boolean]: 'Boolean',
-	[SymbolKind.Array]: 'Array',
-	[SymbolKind.Object]: 'Object',
-	[SymbolKind.Key]: 'Key',
-	[SymbolKind.Null]: 'Null',
-	[SymbolKind.EnumMember]: 'EnumMember',
-	[SymbolKind.Struct]: 'Struct',
-	[SymbolKind.Event]: 'Event',
-	[SymbolKind.Operator]: 'Operator',
-	[SymbolKind.TypeParameter]: 'TypeParameter',
-};
-
-const MAX_HOVER_SYMBOLS_PER_FILE = 12;
-
-interface RawFeature {
-	title: string;
-	summary: string;
-	lanes: string[];
-}
-
-interface EnrichedSymbol {
-	name: string;
-	kind: string;
-	hoverText: string;
-}
-
 export class ProductManagerDataService extends Disposable implements IProductManagerDataService {
 
 	declare readonly _serviceBrand: undefined;
@@ -169,33 +104,28 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private jiraConnection: IJiraConnectionState = defaultJira.connection;
 	private jiraSync: IJiraSyncState = defaultJira.sync;
 	private market = defaultMarket;
+	private currentContext: IResolvedProductManagerContext | undefined;
 
 	/** In-memory GitHub credentials for the current session — used by recookAndRefresh. */
 	private _githubToken: string | undefined;
 	private _githubUsername: string | undefined;
 
-	private static readonly FEATURES_STORAGE_KEY = 'productManager.features';
-	private static readonly FEATURES_METADATA_STORAGE_KEY = 'productManager.featuresMetadata';
-
 	constructor(
 		@IJiraAuthService private readonly jiraAuthService: IJiraAuthService,
 		@IJiraSyncService private readonly jiraSyncService: IJiraSyncService,
 		@IJiraMappingService private readonly jiraMappingService: IJiraMappingService,
+		@IFeaturesIntegrationService private readonly featuresIntegrationService: IFeaturesIntegrationService,
+		@IProductManagerActivationService private readonly productManagerActivationService: IProductManagerActivationService,
+		@IRepoManifestService private readonly repoManifestService: IRepoManifestService,
+		@IContextResolverService private readonly contextResolverService: IContextResolverService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IStorageService private readonly storageService: IStorageService,
-		@ILanguageFeaturesService private readonly languageFeaturesService: ILanguageFeaturesService,
-		@ITextModelService private readonly textModelService: ITextModelService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
-		@ILanguageModelsService private readonly languageModelsService: ILanguageModelsService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super();
 
-		// Restore persisted features from previous session.
-		this._restoreFeatures();
-		void this._restoreJiraState();
+		void this.restoreContextState();
 
 		// Auto-load architecture from API on startup if a repo is already configured.
 		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
@@ -204,57 +134,14 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		}
 	}
 
-	private async _restoreJiraState(): Promise<void> {
-		this.jiraConnection = await this.jiraAuthService.getConnectionState();
+	private async restoreContextState(): Promise<void> {
+		const restored = await this.productManagerActivationService.restore(this.architecture, this.features).catch(error => {
+			this.logService.error('[ProductManagerDataService] restoreContextState: activation restore failed', error);
+			return undefined;
+		});
+		this.applyActivationResult(restored);
 		this.updateJiraModel();
 		this._onDidChange.fire();
-		if (this.jiraConnection.status === 'connected') {
-			void this.refreshJira().catch(error => {
-				this.logService.error('[ProductManagerDataService] _restoreJiraState: refresh failed', error);
-			});
-		}
-	}
-
-	private _restoreFeatures(): void {
-		try {
-			const raw = this.storageService.get(ProductManagerDataService.FEATURES_STORAGE_KEY, StorageScope.APPLICATION);
-			const metaRaw = this.storageService.get(ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY, StorageScope.APPLICATION);
-			if (raw) {
-				const parsed = JSON.parse(raw) as IProductManagerFeatureModel[];
-				if (Array.isArray(parsed) && parsed.length > 0) {
-					this.features = parsed;
-					this.logService.info('[ProductManagerDataService] _restoreFeatures: restored %d features from storage', parsed.length);
-				}
-			}
-			if (metaRaw) {
-				this._featuresMetadata = JSON.parse(metaRaw) as IProductManagerFeaturesMetadata;
-				this.logService.info('[ProductManagerDataService] _restoreFeatures: restored features metadata from storage');
-			}
-		} catch (err) {
-			this.logService.warn('[ProductManagerDataService] _restoreFeatures: failed to restore — %s', err);
-		}
-	}
-
-	private _persistFeatures(): void {
-		try {
-			this.storageService.store(
-				ProductManagerDataService.FEATURES_STORAGE_KEY,
-				JSON.stringify(this.features),
-				StorageScope.APPLICATION,
-				StorageTarget.USER,
-			);
-			if (this._featuresMetadata) {
-				this.storageService.store(
-					ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY,
-					JSON.stringify(this._featuresMetadata),
-					StorageScope.APPLICATION,
-					StorageTarget.USER,
-				);
-			}
-			this.logService.info('[ProductManagerDataService] _persistFeatures: saved %d features to storage', this.features.length);
-		} catch (err) {
-			this.logService.warn('[ProductManagerDataService] _persistFeatures: failed — %s', err);
-		}
 	}
 
 	getArtifactsState(): IProductManagerArtifactsState {
@@ -300,12 +187,15 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		this._onDidChange.fire();
 
 		try {
-			await this.jiraAuthService.connect(options);
-			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_SITE_URL_SETTING, options.siteUrl.trim(), ConfigurationTarget.USER);
-			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING, [...options.projectKeys], ConfigurationTarget.USER);
-			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING, options.filterId ?? '', ConfigurationTarget.USER);
-			await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_JQL_SETTING, options.jql ?? '', ConfigurationTarget.USER);
-			this.jiraConnection = await this.jiraAuthService.validateSession();
+			const session = await this.jiraAuthService.connect(options);
+			await this.persistJiraBinding({
+				profileId: session.profileId,
+				projectKeys: options.projectKeys,
+				filterId: options.filterId,
+				jql: options.jql,
+			});
+			await this.refreshContext();
+			this.jiraConnection = await this.jiraAuthService.validateSession(session.profileId);
 			await this.refreshJira({ full: true });
 		} catch (error) {
 			this.logService.error('[ProductManagerDataService] connectJira failed:', error);
@@ -327,12 +217,14 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 
 	async disconnectJira(): Promise<void> {
 		this.logService.info('[ProductManagerDataService] disconnectJira');
-		await this.jiraAuthService.disconnect();
-		await this.jiraSyncService.clear();
-		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_SITE_URL_SETTING, '', ConfigurationTarget.USER);
-		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING, [], ConfigurationTarget.USER);
-		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_FILTER_ID_SETTING, '', ConfigurationTarget.USER);
-		await this.configurationService.updateValue(PRODUCT_MANAGER_JIRA_JQL_SETTING, '', ConfigurationTarget.USER);
+		await this.refreshContext();
+		const jiraBinding = this.currentContext?.bindings.jira;
+		if (jiraBinding) {
+			await this.jiraAuthService.disconnect(jiraBinding.profile?.id ?? jiraBinding.binding?.profileId);
+			await this.jiraSyncService.clear(jiraBinding);
+		}
+		await this.persistJiraBinding(undefined);
+		await this.refreshContext();
 		this.jiraConnection = { status: 'disconnected' };
 		this.jiraSync = { status: 'idle' };
 		this.jiraIssues = [];
@@ -343,7 +235,20 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 
 	async refreshJira(options?: { full?: boolean }): Promise<void> {
 		this.logService.info('[ProductManagerDataService] refreshJira: full=%s', options?.full === true);
-		this.jiraConnection = await this.jiraAuthService.validateSession();
+		await this.refreshContext();
+		const jiraBinding = this.currentContext?.bindings.jira;
+		if (!jiraBinding) {
+			this.jiraConnection = { status: 'disconnected' };
+			this.jiraSync = {
+				status: 'error',
+				message: localize('jiraRefreshNoConnection', "Connect Jira before refreshing."),
+			};
+			this.updateJiraModel();
+			this._onDidChange.fire();
+			return;
+		}
+
+		this.jiraConnection = await this.jiraAuthService.validateSession(jiraBinding.profile?.id ?? jiraBinding.binding?.profileId);
 		if (this.jiraConnection.status !== 'connected') {
 			this.jiraSync = {
 				status: 'error',
@@ -364,11 +269,11 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		this._onDidChange.fire();
 
 		try {
-			const syncResult = await this.jiraSyncService.refresh(options);
+			const syncResult = await this.jiraSyncService.refresh(jiraBinding, options);
 			this.jiraIssues = syncResult.issues;
 			this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
 			this.jiraSync = syncResult.sync;
-			this.jiraConnection = await this.jiraAuthService.validateSession();
+			this.jiraConnection = await this.jiraAuthService.validateSession(jiraBinding.profile?.id ?? jiraBinding.binding?.profileId);
 			this.updateJiraModel();
 			this._onDidChange.fire();
 		} catch (error) {
@@ -517,6 +422,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 			}
 		}
 
+		await this.refreshContext();
 		await this.fetchArchitectureFromApi();
 	}
 
@@ -530,9 +436,8 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		this.architecture = defaultArchitecture;
 		this.features = defaultFeatures;
 		this._featuresMetadata = undefined;
-		this.storageService.remove(ProductManagerDataService.FEATURES_STORAGE_KEY, StorageScope.APPLICATION);
-		this.storageService.remove(ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY, StorageScope.APPLICATION);
 		this.jiraMappings = [];
+		this.currentContext = undefined;
 		this.updateJiraModel();
 		this.artifactsState = {
 			status: 'notGenerated',
@@ -661,10 +566,8 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 				generatedAt: data.generated_at,
 				fileCount: data.file_count,
 			};
-			if (this.jiraIssues.length > 0) {
-				this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
-				this.updateJiraModel();
-			}
+			const activation = await this.productManagerActivationService.activate(this.architecture, this.artifactsState);
+			this.applyActivationResult(activation);
 			this.logService.info('[ProductManagerDataService] fetchArchitectureFromApi: loaded %d lanes, %d total files', data.lanes.length, data.file_count);
 		} catch (error) {
 			this.logService.error('[ProductManagerDataService] fetchArchitectureFromApi failed:', error);
@@ -682,8 +585,8 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	// ---------------------------------------------------------------------------
 
 	async discoverFeatures(): Promise<void> {
-		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
-		if (!repoId) {
+		await this.refreshContext();
+		if (!this.currentContext) {
 			this.logService.warn('[ProductManagerDataService] discoverFeatures: no repoId — connect a repository first');
 			return;
 		}
@@ -693,230 +596,108 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 			return;
 		}
 
-		this.logService.info('[ProductManagerDataService] discoverFeatures: starting feature discovery for repoId=%s', repoId);
-
-		// ------------------------------------------------------------------
-		// Phase 1: Discover features from file paths
-		// ------------------------------------------------------------------
-		this._onDidChange.fire();
-
-		const laneContext = this.architecture
-			.filter(lane => lane.files && lane.files.length > 0)
-			.map(lane => {
-				const fileList = (lane.files ?? []).slice(0, 60).join('\n  - ');
-				return `${lane.id.toUpperCase()} (${lane.files?.length ?? 0} files):\n  - ${fileList}`;
-			})
-			.join('\n\n');
-
-		const phase1SystemPrompt = `You are a senior product engineer analyzing a software repository.
-Your task: identify ONLY distinct user-facing product features — not architectural layers, not internal utilities, not infrastructure.
-A feature is something a real user or business stakeholder would recognise and care about.
-Base your analysis strictly on the file paths provided.
-Reply ONLY with a valid JSON array, no prose, no markdown fences.
-Each element: {"title": "short feature name", "summary": "one sentence product description", "lanes": ["lane_id", ...]}`;
-
-		const phase1UserPrompt = `Here are the repository files grouped by architectural lane:\n\n${laneContext}\n\nIdentify 4-10 distinct product features this codebase implements.`;
-
-		this.logService.info('[ProductManagerDataService] discoverFeatures: phase 1 — calling LLM for feature clustering');
-		let rawFeatures: RawFeature[];
-		try {
-			rawFeatures = await this._callLLM(phase1SystemPrompt, phase1UserPrompt);
-			this.logService.info('[ProductManagerDataService] discoverFeatures: phase 1 complete — %d features discovered', rawFeatures.length);
-		} catch (error) {
-			this.logService.error('[ProductManagerDataService] discoverFeatures: phase 1 LLM call failed:', error);
+		const featureBinding = this.currentContext.bindings.features;
+		if (!featureBinding?.enabled) {
+			this.logService.warn('[ProductManagerDataService] discoverFeatures: features binding is disabled');
 			return;
 		}
 
-		// ------------------------------------------------------------------
-		// Phase 2: LSP enrichment — symbols + hover per feature
-		// ------------------------------------------------------------------
-		this.logService.info('[ProductManagerDataService] discoverFeatures: phase 2 — LSP symbol enrichment');
-		const { enriched: featureSymbols, totalSymbols, totalFiles } = await this._enrichFeaturesWithLSP(rawFeatures, repoId);
+		this.logService.info('[ProductManagerDataService] discoverFeatures: starting feature discovery for repoId=%s', this.currentContext.repoId);
+		const result = await this.featuresIntegrationService.refresh(this.currentContext, featureBinding, this.architecture, this.artifactsState);
+		this.features = result.features;
+		this._featuresMetadata = result.metadata;
 
-		// ------------------------------------------------------------------
-		// Phase 3: Generate user stories from enriched symbols
-		// ------------------------------------------------------------------
-		this.logService.info('[ProductManagerDataService] discoverFeatures: phase 3 — calling LLM for user stories');
-
-		const featuresContext = rawFeatures.map((f, i) => {
-			const symbols = featureSymbols[i] ?? [];
-			const symbolList = symbols.length > 0
-				? symbols.map(s => `    - ${s.name} (${s.kind})${s.hoverText ? ': ' + s.hoverText.split('\n')[0] : ''}`).join('\n')
-				: '    (no symbols resolved)';
-			return `Feature: ${f.title}\nSummary: ${f.summary}\nLanes: ${f.lanes.join(', ')}\nCode symbols:\n${symbolList}`;
-		}).join('\n\n---\n\n');
-
-		const phase3SystemPrompt = `You are a senior product engineer writing a product backlog.
-For each feature, write 1-10 user stories based strictly on what the code symbols show the software actually does.
-Use "As a [user], I want [action] so that [value]" format for each story.
-Reply ONLY with a valid JSON array, no prose, no markdown fences.
-Each element: {"featureTitle": "...", "stories": [{"title": "short name", "description": "As a..."}]}`;
-
-		const phase3UserPrompt = `Here are the product features with their code symbols:\n\n${featuresContext}\n\nWrite user stories for each feature.`;
-
-		let userStoriesResult: Array<{ featureTitle: string; stories: Array<{ title: string; description: string }> }>;
-		try {
-			userStoriesResult = await this._callLLM(phase3SystemPrompt, phase3UserPrompt);
-			this.logService.info('[ProductManagerDataService] discoverFeatures: phase 3 complete — user stories generated');
-		} catch (error) {
-			this.logService.error('[ProductManagerDataService] discoverFeatures: phase 3 LLM call failed:', error);
-			// Still surface features without user stories
-			userStoriesResult = [];
-		}
-
-		// Build lookup for user stories by feature title
-		const storiesByTitle = new Map<string, readonly IUserStory[]>();
-		for (const entry of userStoriesResult) {
-			if (entry.featureTitle && Array.isArray(entry.stories)) {
-				storiesByTitle.set(entry.featureTitle, entry.stories.map(s => ({
-					title: s.title ?? '',
-					description: s.description ?? '',
-				})));
-			}
-		}
-
-		const knownLaneIds = new Set<string>(['shared', 'application', 'presentation', 'entrypoint', 'ops', 'data', 'domain']);
-
-		this.features = rawFeatures.map(f => ({
-			title: f.title,
-			summary: f.summary,
-			lanes: f.lanes.filter(l => knownLaneIds.has(l)) as ProductManagerLaneId[],
-			userStories: storiesByTitle.get(f.title) ?? [],
-		}));
-
-		const totalUserStories = this.features.reduce((sum, f) => sum + (f.userStories?.length ?? 0), 0);
-
-		this._featuresMetadata = {
-			discoveredAt: new Date().toISOString(),
-			featureCount: this.features.length,
-			userStoryCount: totalUserStories,
-			symbolsProcessed: totalSymbols,
-			filesProcessed: totalFiles,
-			llmModel: 'copilot-fast',
-		};
-
-		this.logService.info('[ProductManagerDataService] discoverFeatures: complete — %d features, %d user stories, %d symbols across %d files',
-			this.features.length, totalUserStories, totalSymbols, totalFiles);
 		if (this.jiraIssues.length > 0) {
 			this.jiraMappings = await this.jiraMappingService.mapIssuesToProductContext(this.jiraIssues, this.features, this.architecture);
 			this.updateJiraModel();
 		}
-		this._persistFeatures();
 		this._onDidChange.fire();
 	}
 
-	// ---------------------------------------------------------------------------
-	// LSP enrichment helpers
-	// ---------------------------------------------------------------------------
-
-	private async _enrichFeaturesWithLSP(features: RawFeature[], repoId: string): Promise<{ enriched: EnrichedSymbol[][]; totalSymbols: number; totalFiles: number }> {
-		const reposPath = this._resolveReposPath();
-		this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: reposPath=%s', reposPath);
-
-		// Build a lane→files map for quick lookup
-		const laneFilesMap = new Map<string, readonly string[]>();
-		for (const lane of this.architecture) {
-			laneFilesMap.set(lane.id, lane.files ?? []);
-		}
-
-		const enriched: EnrichedSymbol[][] = [];
-		let totalSymbols = 0;
-		const processedFiles = new Set<string>();
-
-		for (const feature of features) {
-			// Collect all files belonging to this feature's lanes
-			const featureFiles = new Set<string>();
-			for (const laneId of feature.lanes) {
-				for (const f of laneFilesMap.get(laneId) ?? []) {
-					featureFiles.add(f);
-				}
-			}
-
-			// Cap at 20 files per feature to avoid excessive LSP calls
-			const filesToQuery = [...featureFiles].slice(0, 20);
-			const featureSymbols: EnrichedSymbol[] = [];
-
-			for (const relativePath of filesToQuery) {
-				processedFiles.add(relativePath);
-				try {
-					const fileUri = URI.file(`${reposPath}/${repoId}/${relativePath}`);
-					const symbols = await this._getSymbolsWithHover(fileUri);
-					featureSymbols.push(...symbols);
-					totalSymbols += symbols.length;
-					this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: %s → %d symbols', relativePath, symbols.length);
-				} catch (err) {
-					this.logService.warn('[ProductManagerDataService] _enrichFeaturesWithLSP: skipping %s — %s', relativePath, err);
-				}
-			}
-
-			const hoverCount = featureSymbols.filter(s => s.hoverText).length;
-			this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: feature "%s" — %d symbols, hover coverage %d%%',
-				feature.title, featureSymbols.length, featureSymbols.length > 0 ? Math.round(hoverCount / featureSymbols.length * 100) : 0);
-
-			enriched.push(featureSymbols);
-		}
-
-		return { enriched, totalSymbols, totalFiles: processedFiles.size };
+	private async refreshContext(): Promise<void> {
+		this.currentContext = await this.contextResolverService.resolveContext();
 	}
 
-	private async _getSymbolsWithHover(uri: URI): Promise<EnrichedSymbol[]> {
-		const cts = new CancellationTokenSource();
-		const ref = await this.textModelService.createModelReference(uri);
-		try {
-			const model = ref.object.textEditorModel;
-			const outlineModel = await OutlineModel.create(this.languageFeaturesService.documentSymbolProvider, model, cts.token);
-			const docSymbols = outlineModel.asListOfDocumentSymbols();
+	private applyActivationResult(result: IProductManagerActivationResult | undefined): void {
+		if (!result) {
+			return;
+		}
 
-			const enriched: EnrichedSymbol[] = [];
-			const candidates = docSymbols.filter(s => HOVER_SYMBOL_KINDS.has(s.kind)).slice(0, MAX_HOVER_SYMBOLS_PER_FILE);
-
-			for (const sym of candidates) {
-				const position = new Position(sym.range.startLineNumber, sym.range.startColumn);
-				let hoverText = '';
-				try {
-					const hovers = await getHoversPromise(this.languageFeaturesService.hoverProvider, model, position, cts.token);
-					hoverText = hovers
-						.flatMap(h => Array.isArray(h.contents) ? h.contents : [h.contents])
-						.map(c => (typeof c === 'string' ? c : c.value))
-						.join(' ')
-						.replace(/\s+/g, ' ')
-						.trim()
-						.slice(0, 200);
-				} catch {
-					// hover failed — proceed with name+kind only
-				}
-				enriched.push({ name: sym.name, kind: SYMBOL_KIND_NAMES[sym.kind] ?? String(sym.kind), hoverText });
-			}
-
-			return enriched;
-		} finally {
-			ref.dispose();
-			cts.dispose();
+		this.currentContext = result.context ?? this.currentContext;
+		if (result.features) {
+			this.features = result.features.features;
+			this._featuresMetadata = result.features.metadata;
+		}
+		if (result.jiraConnection) {
+			this.jiraConnection = result.jiraConnection;
+		}
+		if (result.jiraIssues) {
+			this.jiraIssues = result.jiraIssues;
+		}
+		if (result.jiraSync) {
+			this.jiraSync = result.jiraSync;
+		}
+		if (result.jiraMappings) {
+			this.jiraMappings = result.jiraMappings;
 		}
 	}
 
-	/** Resolve the local host path to the bind-mounted repos directory. */
-	private _resolveReposPath(): string {
-		const configured = (this.configurationService.getValue<string>(PRODUCT_MANAGER_REPOS_PATH_SETTING) || '').trim();
-		if (configured) {
-			return configured.replace(/\/$/, '');
+	private async persistJiraBinding(options: { profileId: string; projectKeys: readonly string[]; filterId?: string; jql?: string } | undefined): Promise<void> {
+		const reference = this.currentContext ?? await this.contextResolverService.resolveContext();
+		if (!reference) {
+			return;
 		}
 
-		// Auto-detect: the extension lives at …/vscode-productmanager/out/vs/…
-		// The bind mount is at …/vscode-productmanager/complexity-estimator/repos
-		// Walk up from the workspace folders as a reasonable fallback.
-		const folders = this.workspaceContextService.getWorkspace().folders;
-		if (folders.length > 0) {
-			const wsRoot = folders[0].uri.fsPath.replace(/\/$/, '');
-			return `${wsRoot}/complexity-estimator/repos`;
+		const manifest = reference.manifest ? this.cloneManifest(reference.manifest) : this.createDefaultManifest();
+		if (!options) {
+			delete manifest.productManager.tools.jira;
+		} else {
+			manifest.productManager.tools.jira = {
+				enabled: true,
+				autoRefresh: true,
+				binding: {
+					profileId: options.profileId,
+					selectors: {
+						projectKeys: [...options.projectKeys],
+						filterId: options.filterId ?? '',
+						jql: options.jql ?? '',
+					},
+				},
+			};
 		}
 
-		// Last resort: relative to cwd
-		return './complexity-estimator/repos';
+		await this.repoManifestService.saveManifest(reference, manifest);
+	}
+
+	private createDefaultManifest(): IProductManagerRepoManifest {
+		return {
+			version: 1,
+			productManager: {
+				tools: {
+					features: {
+						enabled: true,
+						autoRefresh: true,
+						binding: {
+							selectors: {
+								generator: 'complexity-estimator',
+								mode: 'full',
+								includeArchitecture: true,
+								includeStories: true,
+							},
+						},
+					},
+				},
+			},
+		};
+	}
+
+	private cloneManifest(manifest: IProductManagerRepoManifest): IProductManagerRepoManifest {
+		return JSON.parse(JSON.stringify(manifest)) as IProductManagerRepoManifest;
 	}
 
 	private updateJiraModel(): void {
-		const selectedProjects = this.configurationService.getValue<string[]>(PRODUCT_MANAGER_JIRA_PROJECT_KEYS_SETTING) ?? [];
+		const projectKeys = this.currentContext?.bindings.jira?.selectors.projectKeys;
+		const selectedProjects = Array.isArray(projectKeys) ? projectKeys.filter((value): value is string => typeof value === 'string') : [];
 		const issueModels = this.jiraIssues.map(issue => ({
 			issue,
 			mapping: this.jiraMappings.find(candidate => candidate.issueKey === issue.key),
@@ -982,43 +763,5 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 			`Description: ${issue.description || '(no description provided)'}`,
 			`Please explain the likely product impact, delivery risk, and which architecture lanes are most relevant.`,
 		].join('\n');
-	}
-
-	// ---------------------------------------------------------------------------
-	// LLM helper
-	// ---------------------------------------------------------------------------
-
-	private async _callLLM<T = unknown>(systemPrompt: string, userPrompt: string): Promise<T> {
-		const models = await this.languageModelsService.selectLanguageModels({ vendor: 'copilot', id: 'copilot-fast' });
-		if (!models.length) {
-			throw new Error('No copilot-fast model available');
-		}
-
-		this.logService.info('[ProductManagerDataService] _callLLM: using model=%s', models[0]);
-
-		const cts = new CancellationTokenSource();
-		const response = await this.languageModelsService.sendChatRequest(
-			models[0],
-			undefined,
-			[
-				{ role: ChatMessageRole.System, content: [{ type: 'text', value: systemPrompt }] },
-				{ role: ChatMessageRole.User, content: [{ type: 'text', value: userPrompt }] },
-			],
-			{ modelOptions: { temperature: 0 } },
-			cts.token,
-		);
-
-		const text = await getTextResponseFromStream(response);
-		cts.dispose();
-
-		// Strip markdown fences if the model wrapped the JSON
-		const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-		this.logService.info('[ProductManagerDataService] _callLLM: response length=%d chars', cleaned.length);
-
-		try {
-			return JSON.parse(cleaned) as T;
-		} catch (err) {
-			throw new Error(`LLM returned invalid JSON: ${err}\n---\n${cleaned.slice(0, 300)}`);
-		}
 	}
 }

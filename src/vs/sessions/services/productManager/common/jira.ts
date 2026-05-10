@@ -4,9 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { IResolvedToolBinding } from './toolBindings.js';
 import { IProductManagerFeatureModel, IProductManagerLaneModel, IJiraConnectOptions, IJiraConnectionState, IJiraFieldMap, IJiraIssue, IJiraIssuePage, IJiraMappingCandidate, IJiraProjectSummary, IJiraSyncState } from './productManager.js';
 
 export interface IJiraAuthSession {
+	readonly profileId: string;
 	readonly siteUrl: string;
 	readonly email: string;
 	readonly apiToken: string;
@@ -30,11 +32,11 @@ export interface IJiraSyncResult {
 export interface IJiraAuthService {
 	readonly _serviceBrand: undefined;
 
-	getConnectionState(): Promise<IJiraConnectionState>;
+	getConnectionState(profileId?: string): Promise<IJiraConnectionState>;
 	connect(options: IJiraConnectOptions): Promise<IJiraAuthSession>;
-	getSession(): Promise<IJiraAuthSession | undefined>;
-	validateSession(): Promise<IJiraConnectionState>;
-	disconnect(): Promise<void>;
+	getSession(profileId?: string): Promise<IJiraAuthSession | undefined>;
+	validateSession(profileId?: string): Promise<IJiraConnectionState>;
+	disconnect(profileId?: string): Promise<void>;
 }
 
 export interface IJiraApiClient {
@@ -48,8 +50,9 @@ export interface IJiraApiClient {
 export interface IJiraSyncService {
 	readonly _serviceBrand: undefined;
 
-	refresh(options?: { full?: boolean }): Promise<IJiraSyncResult>;
-	clear(): Promise<void>;
+	restore(binding: IResolvedToolBinding): Promise<IJiraSyncResult | undefined>;
+	refresh(binding: IResolvedToolBinding, options?: { full?: boolean }): Promise<IJiraSyncResult>;
+	clear(binding: IResolvedToolBinding): Promise<void>;
 }
 
 export interface IJiraMappingService {

@@ -45,6 +45,7 @@ suite('ProductManager - JiraApiClient', () => {
 			store.add(new NullLogService()),
 		));
 		const session: IJiraAuthSession = {
+			profileId: 'jira.company.pm',
 			siteUrl: 'https://company.atlassian.net',
 			email: 'pm@example.com',
 			apiToken: 'secret-token',
@@ -69,6 +70,7 @@ suite('ProductManager - JiraApiClient', () => {
 			store.add(new NullLogService()),
 		));
 		const session: IJiraAuthSession = {
+			profileId: 'jira.company.pm',
 			siteUrl: 'https://company.atlassian.net',
 			email: 'pm@example.com',
 			apiToken: 'secret-token',

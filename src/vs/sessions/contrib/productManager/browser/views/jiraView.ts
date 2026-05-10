@@ -83,6 +83,10 @@ export class JiraView extends ViewPane {
 			refreshButton.label = jira.sync.status === 'syncing' ? localize('refreshJiraLoading', "Refreshing Jira…") : localize('refreshJiraButton', "Refresh Jira");
 			this.renderDisposables.add(refreshButton.onDidClick(() => this.commandService.executeCommand(REFRESH_JIRA_COMMAND_ID)));
 
+			const changeProjectsButton = this.renderDisposables.add(new Button(actions, { ...defaultButtonStyles, secondary: true }));
+			changeProjectsButton.label = localize('changeJiraProjectsButton', "Change Jira Projects");
+			this.renderDisposables.add(changeProjectsButton.onDidClick(() => this.commandService.executeCommand(CONNECT_JIRA_COMMAND_ID)));
+
 			const disconnectButton = this.renderDisposables.add(new Button(actions, { ...defaultButtonStyles, secondary: true }));
 			disconnectButton.label = localize('disconnectJiraButton', "Disconnect Jira");
 			this.renderDisposables.add(disconnectButton.onDidClick(() => this.commandService.executeCommand(DISCONNECT_JIRA_COMMAND_ID)));

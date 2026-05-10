@@ -11,21 +11,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asJson, asText } from '../../../../platform/request/common/request.js';
 import { ISecretStorageService } from '../../../../platform/secrets/common/secrets.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IJiraAuthService, IJiraAuthSession } from '../common/jira.js';
 import { IJiraConnectOptions, IJiraConnectionState, PRODUCT_MANAGER_ESTIMATOR_URL_SETTING } from '../common/productManager.js';
+import { IToolProfileRegistryService, IToolSecretService } from '../common/toolProfiles.js';
 
 const LOG_PREFIX = '[JiraAuthService]';
-const JIRA_STORAGE_KEY = 'productManager.jira.connection';
-
-interface IJiraConnectionMetadata {
-	readonly siteUrl: string;
-	readonly email: string;
-}
-
-interface IJiraSecretPayload {
-	readonly apiToken: string;
-}
+const LEGACY_JIRA_STORAGE_KEY = 'productManager.jira.connection';
 
 interface IJiraMyselfResponse {
 	readonly emailAddress?: string;
@@ -40,6 +32,8 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 
 	constructor(
 		@IRequestService private readonly requestService: IRequestService,
+		@IToolProfileRegistryService private readonly toolProfileRegistryService: IToolProfileRegistryService,
+		@IToolSecretService private readonly toolSecretService: IToolSecretService,
 		@ISecretStorageService private readonly secretStorageService: ISecretStorageService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -48,17 +42,18 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 		super();
 	}
 
-	async getConnectionState(): Promise<IJiraConnectionState> {
-		const metadata = this.readStoredMetadata();
-		if (!metadata) {
+	async getConnectionState(profileId?: string): Promise<IJiraConnectionState> {
+		const profile = await this.getProfile(profileId);
+		if (!profile) {
 			return { status: 'disconnected' };
 		}
 
 		return {
-			status: 'connected',
-			siteUrl: metadata.siteUrl,
-			siteName: this.getSiteName(metadata.siteUrl),
-			accountEmail: metadata.email,
+			status: profile.status ?? 'connected',
+			siteUrl: profile.baseUrl,
+			siteName: profile.baseUrl ? this.getSiteName(profile.baseUrl) : undefined,
+			accountEmail: profile.accountEmail,
+			lastValidatedAt: profile.lastValidatedAt,
 		};
 	}
 
@@ -71,58 +66,59 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 			throw new Error(localize('jiraConnectMissingFields', "Jira site URL, email, and API token are required."));
 		}
 
-		const secretKey = this.buildSecretKey(siteUrl);
-		await this.secretStorageService.set(secretKey, JSON.stringify({ apiToken } satisfies IJiraSecretPayload));
-		this.persistMetadata({ siteUrl, email });
+		const profileId = this.buildProfileId(siteUrl, email);
+		await this.toolSecretService.setSecret(profileId, apiToken);
+		await this.toolProfileRegistryService.saveProfile({
+			id: profileId,
+			toolId: 'jira',
+			label: `${this.getSiteName(siteUrl)} (${email})`,
+			baseUrl: siteUrl,
+			accountEmail: email,
+			status: 'connected',
+		});
 
 		this.logService.info(`${LOG_PREFIX} connect: site=%s`, siteUrl);
 
 		const session = {
+			profileId,
 			siteUrl,
 			email,
 			apiToken,
 		} satisfies IJiraAuthSession;
 
-		const validation = await this.validateSession();
+		const validation = await this.validateSession(profileId);
 		if (validation.status !== 'connected') {
-			await this.disconnect();
+			await this.disconnect(profileId);
 			throw new Error(validation.lastError ?? localize('jiraValidationFailed', "Failed to validate the Jira connection."));
 		}
 
 		return session;
 	}
 
-	async getSession(): Promise<IJiraAuthSession | undefined> {
-		const metadata = this.readStoredMetadata();
-		if (!metadata) {
+	async getSession(profileId?: string): Promise<IJiraAuthSession | undefined> {
+		let profile = await this.getProfile(profileId);
+		if (!profile) {
+			profile = await this.migrateLegacyProfile();
+		}
+		if (!profile?.baseUrl || !profile.accountEmail) {
 			return undefined;
 		}
 
-		const secretKey = this.buildSecretKey(metadata.siteUrl);
-		const rawSecret = await this.secretStorageService.get(secretKey);
-		if (!rawSecret) {
+		const secret = await this.toolSecretService.getSecret(profile.id);
+		if (!secret) {
 			return undefined;
 		}
 
-		try {
-			const parsed = JSON.parse(rawSecret) as IJiraSecretPayload;
-			if (!parsed.apiToken) {
-				return undefined;
-			}
-
-			return {
-				siteUrl: metadata.siteUrl,
-				email: metadata.email,
-				apiToken: parsed.apiToken,
-			};
-		} catch (error) {
-			this.logService.error(`${LOG_PREFIX} getSession: invalid secret payload`, error);
-			return undefined;
-		}
+		return {
+			profileId: profile.id,
+			siteUrl: profile.baseUrl,
+			email: profile.accountEmail,
+			apiToken: secret,
+		};
 	}
 
-	async validateSession(): Promise<IJiraConnectionState> {
-		const session = await this.getSession();
+	async validateSession(profileId?: string): Promise<IJiraConnectionState> {
+		const session = await this.getSession(profileId);
 		if (!session) {
 			return { status: 'disconnected' };
 		}
@@ -164,6 +160,16 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 			}
 
 			const myself = await asJson<IJiraMyselfResponse>(context);
+			await this.toolProfileRegistryService.saveProfile({
+				id: session.profileId,
+				toolId: 'jira',
+				label: `${this.getSiteName(myself?.site_url || session.siteUrl)} (${myself?.emailAddress || session.email})`,
+				baseUrl: myself?.site_url || session.siteUrl,
+				accountEmail: myself?.emailAddress || session.email,
+				lastValidatedAt: new Date().toISOString(),
+				status: 'connected',
+			});
+			await this.toolProfileRegistryService.markProfileUsed(session.profileId);
 			return {
 				status: 'connected',
 				siteUrl: myself?.site_url || session.siteUrl,
@@ -183,17 +189,19 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 		}
 	}
 
-	async disconnect(): Promise<void> {
-		const metadata = this.readStoredMetadata();
-		if (metadata) {
-			await this.secretStorageService.delete(this.buildSecretKey(metadata.siteUrl));
+	async disconnect(profileId?: string): Promise<void> {
+		const profile = await this.getProfile(profileId);
+		if (profile) {
+			await this.toolSecretService.deleteSecret(profile.id);
+			await this.toolProfileRegistryService.deleteProfile(profile.id);
 		}
-		this.storageService.remove(JIRA_STORAGE_KEY, StorageScope.APPLICATION);
 		this.logService.info(`${LOG_PREFIX} disconnect`);
 	}
 
-	private buildSecretKey(siteUrl: string): string {
-		return `productManager.jira.session:${this.normalizeSiteUrl(siteUrl)}`;
+	private buildProfileId(siteUrl: string, email: string): string {
+		const authority = this.getSiteName(siteUrl).replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+		const normalizedEmail = email.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+		return `jira.${authority}.${normalizedEmail}`;
 	}
 
 	private normalizeSiteUrl(siteUrl: string): string {
@@ -206,22 +214,59 @@ export class JiraAuthService extends Disposable implements IJiraAuthService {
 		return `${uri.scheme}://${uri.authority}${uri.path.replace(/\/$/, '')}`;
 	}
 
-	private readStoredMetadata(): IJiraConnectionMetadata | undefined {
-		const raw = this.storageService.get(JIRA_STORAGE_KEY, StorageScope.APPLICATION);
+	private async getProfile(profileId?: string) {
+		if (profileId) {
+			return this.toolProfileRegistryService.getProfile(profileId);
+		}
+
+		const profiles = [...await this.toolProfileRegistryService.listProfiles('jira')];
+		profiles.sort((left, right) => (right.lastUsedAt ?? '').localeCompare(left.lastUsedAt ?? ''));
+		return profiles[0];
+	}
+
+	private async migrateLegacyProfile() {
+		const raw = this.storageService.get(LEGACY_JIRA_STORAGE_KEY, StorageScope.APPLICATION);
 		if (!raw) {
 			return undefined;
 		}
 
 		try {
-			return JSON.parse(raw) as IJiraConnectionMetadata;
+			const legacy = JSON.parse(raw) as { siteUrl?: string; email?: string };
+			if (!legacy.siteUrl || !legacy.email) {
+				return undefined;
+			}
+
+			const siteUrl = this.normalizeSiteUrl(legacy.siteUrl);
+			const profileId = this.buildProfileId(siteUrl, legacy.email);
+			const existing = await this.toolProfileRegistryService.getProfile(profileId);
+			if (existing) {
+				return existing;
+			}
+
+			const legacySecret = await this.secretStorageService.get(`productManager.jira.session:${siteUrl}`);
+			if (!legacySecret) {
+				return undefined;
+			}
+
+			const parsedSecret = JSON.parse(legacySecret) as { apiToken?: string };
+			if (!parsedSecret.apiToken) {
+				return undefined;
+			}
+
+			await this.toolSecretService.setSecret(profileId, parsedSecret.apiToken);
+			await this.toolProfileRegistryService.saveProfile({
+				id: profileId,
+				toolId: 'jira',
+				label: `${this.getSiteName(siteUrl)} (${legacy.email})`,
+				baseUrl: siteUrl,
+				accountEmail: legacy.email,
+				status: 'connected',
+			});
+			return this.toolProfileRegistryService.getProfile(profileId);
 		} catch (error) {
-			this.logService.error(`${LOG_PREFIX} readStoredMetadata: invalid metadata`, error);
+			this.logService.error(`${LOG_PREFIX} migrateLegacyProfile: failed`, error);
 			return undefined;
 		}
-	}
-
-	private persistMetadata(metadata: IJiraConnectionMetadata): void {
-		this.storageService.store(JIRA_STORAGE_KEY, JSON.stringify(metadata), StorageScope.APPLICATION, StorageTarget.USER);
 	}
 
 	private getSiteName(siteUrl: string): string {

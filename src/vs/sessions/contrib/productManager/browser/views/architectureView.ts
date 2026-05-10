@@ -125,10 +125,6 @@ export class ArchitectureView extends ViewPane {
 
 		dom.append(headerCard, dom.$('p.product-manager-body', undefined, statusMsg));
 
-		if (artifactsState.generatedAt) {
-			dom.append(headerCard, dom.$('span.product-manager-tag', undefined, localize('generatedAt', "Generated {0}", artifactsState.generatedAt)));
-		}
-
 		const actionsRow = dom.append(headerCard, dom.$('.product-manager-actions'));
 		const busy = this._isBusy;
 

@@ -69,7 +69,9 @@ export class ProductOverviewView extends ViewPane {
 
 		const actions = dom.append(hero, dom.$('.product-manager-actions'));
 		const connectJiraButton = this._register(new Button(actions, defaultButtonStyles));
-		connectJiraButton.label = localize('connectJira', "Connect Jira");
+		connectJiraButton.label = jira.connection.status === 'connected'
+			? localize('changeJira', "Change Jira")
+			: localize('connectJira', "Connect Jira");
 		this._register(connectJiraButton.onDidClick(() => this.commandService.executeCommand(CONNECT_JIRA_COMMAND_ID)));
 
 		const connectSnykButton = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true }));

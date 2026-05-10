@@ -36,9 +36,20 @@ import { ProductManagerModeContext } from '../../../common/contextkeys.js';
 import { JiraApiClient } from '../../../services/productManager/browser/jiraApiClient.js';
 import { JiraAuthService } from '../../../services/productManager/browser/jiraAuthService.js';
 import { JiraMappingService } from '../../../services/productManager/browser/jiraMappingService.js';
+import { ToolSecretService } from '../../../services/productManager/browser/toolSecretService.js';
 import { GITHUB_REMOTE_FILE_SCHEME } from '../../../services/sessions/common/session.js';
 import { JiraSyncService } from '../../../services/productManager/browser/jiraSyncService.js';
+import { RepoManifestService } from '../../../services/productManager/browser/repoManifestService.js';
+import { ToolProfileRegistryService } from '../../../services/productManager/browser/toolProfileRegistryService.js';
+import { ToolBindingStateStoreService } from '../../../services/productManager/browser/toolBindingStateStoreService.js';
+import { ContextResolverService } from '../../../services/productManager/browser/contextResolverService.js';
+import { FeaturesIntegrationService } from '../../../services/productManager/browser/featuresIntegrationService.js';
+import { ProductManagerActivationService } from '../../../services/productManager/browser/productManagerActivationService.js';
 import { IJiraApiClient, IJiraAuthService, IJiraMappingService, IJiraSyncService } from '../../../services/productManager/common/jira.js';
+import { IRepoManifestService } from '../../../services/productManager/common/repoManifest.js';
+import { IContextResolverService, IToolBindingStateStoreService } from '../../../services/productManager/common/toolBindings.js';
+import { IFeaturesIntegrationService, IProductManagerActivationService } from '../../../services/productManager/common/toolIntegration.js';
+import { IToolProfileRegistryService, IToolSecretService } from '../../../services/productManager/common/toolProfiles.js';
 import { isProductManagerEnabled, ASK_COPILOT_ABOUT_JIRA_ISSUE_COMMAND_ID, CONFIGURE_CLAUDE_COMMAND_ID, CONFIGURE_OPENAI_AZURE_COMMAND_ID, CONNECT_CRM_COMMAND_ID, CONNECT_JIRA_COMMAND_ID, CONNECT_SNYK_COMMAND_ID, DISCONNECT_JIRA_COMMAND_ID, IProductManagerDataService, OPEN_DISCOVER_CHAT_COMMAND_ID, OPEN_JIRA_ISSUE_COMMAND_ID, OPEN_LOCAL_CHAT_COMMAND_ID, PRODUCT_MANAGER_MODE_SETTING, PRODUCT_MANAGER_REPO_URL_SETTING, REFRESH_JIRA_COMMAND_ID } from '../../../services/productManager/common/productManager.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
@@ -157,9 +168,71 @@ class ConnectJiraAction extends Action2 {
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const quickInputService = accessor.get(IQuickInputService);
 		const productManagerDataService = accessor.get(IProductManagerDataService);
+		const jiraAuthService = accessor.get(IJiraAuthService);
+		const jiraApiClient = accessor.get(IJiraApiClient);
+		const toolProfileRegistryService = accessor.get(IToolProfileRegistryService);
+		const notificationService = accessor.get(INotificationService);
+
+		const savedProfiles = await toolProfileRegistryService.listProfiles('jira');
+		const selectedProfile = await quickInputService.pick([
+			...savedProfiles.map(profile => ({
+				id: profile.id,
+				label: profile.label,
+				description: profile.baseUrl,
+				detail: profile.status === 'expired'
+					? localize('savedJiraProfileExpired', "Saved profile needs reconnect")
+					: localize('savedJiraProfileReuse', "Reuse saved Jira credentials for this repository"),
+			})),
+			{
+				id: '__new__',
+				label: localize('connectNewJiraProfile', "Connect New Jira Profile"),
+				description: localize('connectNewJiraProfileDescription', "Enter a Jira site, email, and API token"),
+			},
+		], {
+			title: localize('connectJiraProfilePickerTitle', "Connect Jira — Profile"),
+			placeHolder: localize('connectJiraProfilePickerPlaceholder', "Choose a saved Jira profile or connect a new one"),
+			ignoreFocusLost: true,
+			matchOnDescription: true,
+			matchOnDetail: true,
+		});
+		if (!selectedProfile) {
+			return;
+		}
+
+		if (selectedProfile.id !== '__new__') {
+			const session = await jiraAuthService.getSession(selectedProfile.id);
+			if (!session) {
+				notificationService.error(localize('missingSavedJiraProfile', "The selected Jira profile is missing credentials. Reconnect it to continue."));
+				return;
+			}
+
+			const projectKeys = await pickJiraProjects(quickInputService, jiraApiClient, session);
+			if (!projectKeys) {
+				return;
+			}
+
+			const jql = await quickInputService.input({
+				title: localize('connectJiraSavedProfileJqlTitle', "Connect Jira — Optional Extra JQL"),
+				placeHolder: 'statusCategory != Done',
+				prompt: localize('connectJiraSavedProfileJqlPrompt', "Optional extra JQL used to narrow the Product Mode Jira sync."),
+				ignoreFocusLost: true,
+			});
+			if (jql === undefined) {
+				return;
+			}
+
+			await productManagerDataService.connectJira({
+				siteUrl: session.siteUrl,
+				email: session.email,
+				apiToken: session.apiToken,
+				projectKeys,
+				jql: jql.trim() || undefined,
+			});
+			return;
+		}
 
 		const siteUrl = await quickInputService.input({
-			title: localize('connectJiraStepOneTitle', "Connect Jira (1/5) — Site URL"),
+			title: localize('connectJiraStepOneTitle', "Connect Jira (1/4) — Site URL"),
 			placeHolder: 'https://your-company.atlassian.net',
 			prompt: localize('connectJiraStepOnePrompt', "Enter your Jira Cloud site URL"),
 			ignoreFocusLost: true,
@@ -178,7 +251,7 @@ class ConnectJiraAction extends Action2 {
 		}
 
 		const email = await quickInputService.input({
-			title: localize('connectJiraStepTwoTitle', "Connect Jira (2/5) — Email"),
+			title: localize('connectJiraStepTwoTitle', "Connect Jira (2/4) — Email"),
 			placeHolder: 'name@company.com',
 			prompt: localize('connectJiraStepTwoPrompt', "Enter the Atlassian account email for your Jira API token"),
 			ignoreFocusLost: true,
@@ -189,7 +262,7 @@ class ConnectJiraAction extends Action2 {
 		}
 
 		const apiToken = await quickInputService.input({
-			title: localize('connectJiraStepThreeTitle', "Connect Jira (3/5) — API Token"),
+			title: localize('connectJiraStepThreeTitle', "Connect Jira (3/4) — API Token"),
 			placeHolder: 'Paste Jira API token',
 			prompt: localize('connectJiraStepThreePrompt', "Paste your Jira API token. It will be stored securely in secret storage."),
 			password: true,
@@ -200,19 +273,20 @@ class ConnectJiraAction extends Action2 {
 			return;
 		}
 
-		const projectKeysInput = await quickInputService.input({
-			title: localize('connectJiraStepFourTitle', "Connect Jira (4/5) — Project Keys"),
-			placeHolder: 'PROJ, CORE',
-			prompt: localize('connectJiraStepFourPrompt', "Enter one or more Jira project keys separated by commas."),
-			ignoreFocusLost: true,
-			validateInput: value => Promise.resolve(parseProjectKeys(value).length > 0 ? undefined : localize('connectJiraProjectsRequired', "Enter at least one Jira project key.")),
+		const validatedSession = await jiraAuthService.connect({
+			siteUrl: siteUrl.trim(),
+			email: email.trim(),
+			apiToken: apiToken.trim(),
+			projectKeys: [],
 		});
-		if (!projectKeysInput) {
+
+		const projectKeys = await pickJiraProjects(quickInputService, jiraApiClient, validatedSession);
+		if (!projectKeys) {
 			return;
 		}
 
 		const jql = await quickInputService.input({
-			title: localize('connectJiraStepFiveTitle', "Connect Jira (5/5) — Optional Extra JQL"),
+			title: localize('connectJiraStepFourTitle', "Connect Jira (4/4) — Optional Extra JQL"),
 			placeHolder: 'statusCategory != Done',
 			prompt: localize('connectJiraStepFivePrompt', "Optional extra JQL used to narrow the Product Mode Jira sync."),
 			ignoreFocusLost: true,
@@ -225,7 +299,7 @@ class ConnectJiraAction extends Action2 {
 			siteUrl: siteUrl.trim(),
 			email: email.trim(),
 			apiToken: apiToken.trim(),
-			projectKeys: parseProjectKeys(projectKeysInput),
+			projectKeys,
 			jql: jql.trim() || undefined,
 		});
 	}
@@ -361,6 +435,51 @@ class AskCopilotAboutJiraIssueAction extends Action2 {
 
 function parseProjectKeys(value: string): string[] {
 	return [...new Set(value.split(',').map(part => part.trim().toUpperCase()).filter(Boolean))];
+}
+
+async function pickJiraProjects(quickInputService: IQuickInputService, jiraApiClient: IJiraApiClient, session: { siteUrl: string; email: string; apiToken: string; profileId?: string }): Promise<string[] | undefined> {
+	try {
+		const projects = await jiraApiClient.getAccessibleProjects({
+			profileId: session.profileId ?? 'jira.temp',
+			siteUrl: session.siteUrl,
+			email: session.email,
+			apiToken: session.apiToken,
+		});
+		if (projects.length > 0) {
+			const picks = await quickInputService.pick(projects.map(project => ({
+				id: project.key,
+				label: project.key,
+				description: project.name,
+				detail: project.id,
+			})), {
+				title: localize('connectJiraProjectsPickerTitle', "Connect Jira — Projects"),
+				placeHolder: localize('connectJiraProjectsPickerPlaceholder', "Search and choose one or more Jira projects for this repository"),
+				canPickMany: true,
+				ignoreFocusLost: true,
+				matchOnDescription: true,
+				matchOnDetail: true,
+			});
+			if (!picks || picks.length === 0) {
+				return undefined;
+			}
+			return picks.map(pick => pick.id);
+		}
+	} catch {
+		// fall back to manual project entry below when the Jira project search is unavailable
+	}
+
+	const projectKeysInput = await quickInputService.input({
+		title: localize('connectJiraProjectsManualTitle', "Connect Jira — Project Keys"),
+		placeHolder: 'PROJ, CORE',
+		prompt: localize('connectJiraProjectsManualPrompt', "Enter one or more Jira project keys separated by commas."),
+		ignoreFocusLost: true,
+		validateInput: value => Promise.resolve(parseProjectKeys(value).length > 0 ? undefined : localize('connectJiraProjectsRequired', "Enter at least one Jira project key.")),
+	});
+	if (!projectKeysInput) {
+		return undefined;
+	}
+
+	return parseProjectKeys(projectKeysInput);
 }
 
 function parseGitHubOwnerRepo(repoUrl: string): { owner: string; repo: string } | undefined {
@@ -620,6 +739,13 @@ registerSingleton(IJiraAuthService, JiraAuthService, InstantiationType.Delayed);
 registerSingleton(IJiraApiClient, JiraApiClient, InstantiationType.Delayed);
 registerSingleton(IJiraSyncService, JiraSyncService, InstantiationType.Delayed);
 registerSingleton(IJiraMappingService, JiraMappingService, InstantiationType.Delayed);
+registerSingleton(IToolProfileRegistryService, ToolProfileRegistryService, InstantiationType.Delayed);
+registerSingleton(IToolSecretService, ToolSecretService, InstantiationType.Delayed);
+registerSingleton(IRepoManifestService, RepoManifestService, InstantiationType.Delayed);
+registerSingleton(IToolBindingStateStoreService, ToolBindingStateStoreService, InstantiationType.Delayed);
+registerSingleton(IContextResolverService, ContextResolverService, InstantiationType.Delayed);
+registerSingleton(IFeaturesIntegrationService, FeaturesIntegrationService, InstantiationType.Delayed);
+registerSingleton(IProductManagerActivationService, ProductManagerActivationService, InstantiationType.Delayed);
 registerSingleton(IProductManagerDataService, ProductManagerDataService, InstantiationType.Delayed);
 registerAction2(ConnectJiraAction);
 registerAction2(RefreshJiraAction);

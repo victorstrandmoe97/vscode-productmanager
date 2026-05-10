@@ -7,22 +7,20 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { JiraSyncService } from '../../browser/jiraSyncService.js';
+import { ToolBindingStateStoreService } from '../../browser/toolBindingStateStoreService.js';
 import { IJiraApiClient, IJiraAuthService, IJiraAuthSession } from '../../common/jira.js';
+import { IResolvedToolBinding } from '../../common/toolBindings.js';
 
 suite('ProductManager - JiraSyncService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('refresh merges incremental issues and updates the watermark', async () => {
 		const storageService = store.add(new InMemoryStorageService());
-		const configurationService = new TestConfigurationService({
-			'sessions.productManager.jiraProjectKeys': ['PROJ'],
-			'sessions.productManager.jiraFilterId': '',
-			'sessions.productManager.jiraJql': '',
-		});
+		const bindingStateStoreService = store.add(new ToolBindingStateStoreService(storageService, store.add(new NullLogService())));
 
 		const session: IJiraAuthSession = {
+			profileId: 'jira.company.pm',
 			siteUrl: 'https://company.atlassian.net',
 			email: 'pm@example.com',
 			apiToken: 'secret-token',
@@ -35,6 +33,34 @@ suite('ProductManager - JiraSyncService', () => {
 			getSession: async () => session,
 			validateSession: async () => ({ status: 'connected', siteUrl: session.siteUrl }),
 			disconnect: async () => {},
+		};
+
+		const binding: IResolvedToolBinding = {
+			toolId: 'jira',
+			enabled: true,
+			autoRefresh: true,
+			profile: {
+				id: session.profileId,
+				toolId: 'jira',
+				label: 'company.atlassian.net (pm@example.com)',
+				baseUrl: session.siteUrl,
+				accountEmail: session.email,
+			},
+			binding: {
+				profileId: session.profileId,
+				selectors: {
+					projectKeys: ['PROJ'],
+					filterId: '',
+					jql: '',
+				},
+			},
+			selectors: {
+				projectKeys: ['PROJ'],
+				filterId: '',
+				jql: '',
+			},
+			source: 'repo-local',
+			cacheKey: 'productManager.bindingState:repo:jira:jira.company.pm:test',
 		};
 
 		let searchCalls = 0;
@@ -93,18 +119,17 @@ suite('ProductManager - JiraSyncService', () => {
 		const service = store.add(new JiraSyncService(
 			authService,
 			apiClient,
-			storageService,
-			configurationService,
+			bindingStateStoreService,
 			store.add(new NullLogService()),
 		));
 
-		const firstResult = await service.refresh({ full: true });
+		const firstResult = await service.refresh(binding, { full: true });
 		assert.strictEqual(firstResult.issues.length, 1);
 		assert.strictEqual(firstResult.sync.lastSuccessfulWatermark, '2026-05-10T10:00:00.000Z');
 
-		const secondResult = await service.refresh();
+		const secondResult = await service.refresh(binding);
 		assert.strictEqual(secondResult.issues.length, 2);
 		assert.strictEqual(secondResult.sync.lastSuccessfulWatermark, '2026-05-10T12:00:00.000Z');
-		assert.ok(storageService.get('productManager.jira.syncState', StorageScope.APPLICATION));
+		assert.ok(storageService.get(binding.cacheKey, StorageScope.APPLICATION));
 	});
 });
