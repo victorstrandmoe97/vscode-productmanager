@@ -73,6 +73,17 @@ export interface IProductManagerArtifactsState {
 	readonly status: ProductManagerArtifactsStatus;
 	readonly message?: string;
 	readonly generatedAt?: string;
+	/** Total files classified by the complexity-estimator. */
+	readonly fileCount?: number;
+}
+
+export interface IProductManagerFeaturesMetadata {
+	readonly discoveredAt: string;
+	readonly featureCount: number;
+	readonly userStoryCount: number;
+	readonly symbolsProcessed: number;
+	readonly filesProcessed: number;
+	readonly llmModel: string;
 }
 
 
@@ -84,6 +95,7 @@ export interface IProductManagerDataService {
 	getOverview(): IProductManagerOverviewModel;
 	getArchitecture(): readonly IProductManagerLaneModel[];
 	getFeatures(): readonly IProductManagerFeatureModel[];
+	getFeaturesMetadata(): IProductManagerFeaturesMetadata | undefined;
 	getJira(): IProductManagerJiraModel;
 	getMarket(): IProductManagerMarketModel;
 	fetchArchitectureFromApi(): Promise<void>;

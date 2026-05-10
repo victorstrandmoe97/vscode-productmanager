@@ -16,12 +16,14 @@ import { ITextModelService } from '../../../../editor/common/services/resolverSe
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import {
 	IProductManagerArtifactsState,
 	IProductManagerDataService,
 	IProductManagerFeatureModel,
+	IProductManagerFeaturesMetadata,
 	IProductManagerJiraModel,
 	IProductManagerLaneModel,
 	IProductManagerMarketModel,
@@ -36,11 +38,11 @@ import {
 
 const defaultOverview: IProductManagerOverviewModel = {
 	title: localize('productOverviewTitle', "Product Overview"),
-	summary: localize('productOverviewSummary', "Product Mode turns the repository into a product map so owners can explore the system in terms of features, architecture lanes, and delivery risk."),
+	summary: localize('productOverviewSummary', "Product Mode maps a live repository into architecture lanes, product features, and user stories — all queryable through Copilot."),
 	highlights: [
-		localize('productHighlightArchitecture', "Architecture lanes follow the estimator taxonomy and stay stable across restarts."),
-		localize('productHighlightConvergence', "Features, Jira issues, and market context will all converge into one PM-first workspace."),
-		localize('productHighlightCopilot', "Copilot stays available, but the shell now opens with product-language framing by default."),
+		localize('productHighlightArchitecture', "Architecture Lanes — the complexity-estimator classifies every file into 7 structural layers so you can reason about the codebase as a product."),
+		localize('productHighlightFeatures', "Feature Discovery — Copilot analyses code symbols and call graphs to surface product features with user stories derived from real code signals."),
+		localize('productHighlightCopilot', "Copilot Agent — every architecture lane and discovered feature is available as chat context, so you can ask product questions grounded in code."),
 	],
 };
 
@@ -141,6 +143,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private overview = defaultOverview;
 	private architecture = defaultArchitecture;
 	private features: readonly IProductManagerFeatureModel[] = defaultFeatures;
+	private _featuresMetadata: IProductManagerFeaturesMetadata | undefined;
 	private jira = defaultJira;
 	private market = defaultMarket;
 
@@ -148,9 +151,13 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	private _githubToken: string | undefined;
 	private _githubUsername: string | undefined;
 
+	private static readonly FEATURES_STORAGE_KEY = 'productManager.features';
+	private static readonly FEATURES_METADATA_STORAGE_KEY = 'productManager.featuresMetadata';
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IStorageService private readonly storageService: IStorageService,
 		@ILanguageFeaturesService private readonly languageFeaturesService: ILanguageFeaturesService,
 		@ITextModelService private readonly textModelService: ITextModelService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -158,10 +165,55 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 	) {
 		super();
 
-		// Auto-load from API on startup if a repo is already configured.
+		// Restore persisted features from previous session.
+		this._restoreFeatures();
+
+		// Auto-load architecture from API on startup if a repo is already configured.
 		const repoId = this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_ID_SETTING) || '';
 		if (repoId) {
 			void this.fetchArchitectureFromApi();
+		}
+	}
+
+	private _restoreFeatures(): void {
+		try {
+			const raw = this.storageService.get(ProductManagerDataService.FEATURES_STORAGE_KEY, StorageScope.APPLICATION);
+			const metaRaw = this.storageService.get(ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY, StorageScope.APPLICATION);
+			if (raw) {
+				const parsed = JSON.parse(raw) as IProductManagerFeatureModel[];
+				if (Array.isArray(parsed) && parsed.length > 0) {
+					this.features = parsed;
+					this.logService.info('[ProductManagerDataService] _restoreFeatures: restored %d features from storage', parsed.length);
+				}
+			}
+			if (metaRaw) {
+				this._featuresMetadata = JSON.parse(metaRaw) as IProductManagerFeaturesMetadata;
+				this.logService.info('[ProductManagerDataService] _restoreFeatures: restored features metadata from storage');
+			}
+		} catch (err) {
+			this.logService.warn('[ProductManagerDataService] _restoreFeatures: failed to restore — %s', err);
+		}
+	}
+
+	private _persistFeatures(): void {
+		try {
+			this.storageService.store(
+				ProductManagerDataService.FEATURES_STORAGE_KEY,
+				JSON.stringify(this.features),
+				StorageScope.APPLICATION,
+				StorageTarget.USER,
+			);
+			if (this._featuresMetadata) {
+				this.storageService.store(
+					ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY,
+					JSON.stringify(this._featuresMetadata),
+					StorageScope.APPLICATION,
+					StorageTarget.USER,
+				);
+			}
+			this.logService.info('[ProductManagerDataService] _persistFeatures: saved %d features to storage', this.features.length);
+		} catch (err) {
+			this.logService.warn('[ProductManagerDataService] _persistFeatures: failed — %s', err);
 		}
 	}
 
@@ -179,6 +231,10 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 
 	getFeatures(): readonly IProductManagerFeatureModel[] {
 		return this.features;
+	}
+
+	getFeaturesMetadata(): IProductManagerFeaturesMetadata | undefined {
+		return this._featuresMetadata;
 	}
 
 	getJira(): IProductManagerJiraModel {
@@ -311,6 +367,9 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		this.overview = defaultOverview;
 		this.architecture = defaultArchitecture;
 		this.features = defaultFeatures;
+		this._featuresMetadata = undefined;
+		this.storageService.remove(ProductManagerDataService.FEATURES_STORAGE_KEY, StorageScope.APPLICATION);
+		this.storageService.remove(ProductManagerDataService.FEATURES_METADATA_STORAGE_KEY, StorageScope.APPLICATION);
 		this.artifactsState = {
 			status: 'notGenerated',
 			message: localize('repositoryDisconnected', "Repository disconnected. Connect a GitHub repository to load the architecture map."),
@@ -333,7 +392,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 		}
 
 		if (!this._githubToken) {
-			this.logService.warn('[ProductManagerDataService] recookAndRefresh: no in-memory token — re-clone may fail for private repos. Use "Change Repository" to reconnect with credentials.');
+			this.logService.info('[ProductManagerDataService] recookAndRefresh: no in-memory token — public repos do not require credentials; for private repos use "Change Repository" to reconnect.');
 		}
 
 		this.logService.info('[ProductManagerDataService] recookAndRefresh: starting recook for repoId=%s', repoId);
@@ -436,6 +495,7 @@ export class ProductManagerDataService extends Disposable implements IProductMan
 				status: 'ready',
 				message: localize('productArtifactsApiReady', "Architecture map loaded from complexity-estimator ({0} files).", data.file_count),
 				generatedAt: data.generated_at,
+				fileCount: data.file_count,
 			};
 			this.logService.info('[ProductManagerDataService] fetchArchitectureFromApi: loaded %d lanes, %d total files', data.lanes.length, data.file_count);
 		} catch (error) {
@@ -503,7 +563,7 @@ Each element: {"title": "short feature name", "summary": "one sentence product d
 		// Phase 2: LSP enrichment — symbols + hover per feature
 		// ------------------------------------------------------------------
 		this.logService.info('[ProductManagerDataService] discoverFeatures: phase 2 — LSP symbol enrichment');
-		const featureSymbols = await this._enrichFeaturesWithLSP(rawFeatures, repoId);
+		const { enriched: featureSymbols, totalSymbols, totalFiles } = await this._enrichFeaturesWithLSP(rawFeatures, repoId);
 
 		// ------------------------------------------------------------------
 		// Phase 3: Generate user stories from enriched symbols
@@ -556,7 +616,20 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 			userStories: storiesByTitle.get(f.title) ?? [],
 		}));
 
-		this.logService.info('[ProductManagerDataService] discoverFeatures: complete — %d features with user stories', this.features.length);
+		const totalUserStories = this.features.reduce((sum, f) => sum + (f.userStories?.length ?? 0), 0);
+
+		this._featuresMetadata = {
+			discoveredAt: new Date().toISOString(),
+			featureCount: this.features.length,
+			userStoryCount: totalUserStories,
+			symbolsProcessed: totalSymbols,
+			filesProcessed: totalFiles,
+			llmModel: 'copilot-fast',
+		};
+
+		this.logService.info('[ProductManagerDataService] discoverFeatures: complete — %d features, %d user stories, %d symbols across %d files',
+			this.features.length, totalUserStories, totalSymbols, totalFiles);
+		this._persistFeatures();
 		this._onDidChange.fire();
 	}
 
@@ -564,7 +637,7 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 	// LSP enrichment helpers
 	// ---------------------------------------------------------------------------
 
-	private async _enrichFeaturesWithLSP(features: RawFeature[], repoId: string): Promise<EnrichedSymbol[][]> {
+	private async _enrichFeaturesWithLSP(features: RawFeature[], repoId: string): Promise<{ enriched: EnrichedSymbol[][]; totalSymbols: number; totalFiles: number }> {
 		const reposPath = this._resolveReposPath();
 		this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: reposPath=%s', reposPath);
 
@@ -574,7 +647,9 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 			laneFilesMap.set(lane.id, lane.files ?? []);
 		}
 
-		const result: EnrichedSymbol[][] = [];
+		const enriched: EnrichedSymbol[][] = [];
+		let totalSymbols = 0;
+		const processedFiles = new Set<string>();
 
 		for (const feature of features) {
 			// Collect all files belonging to this feature's lanes
@@ -587,27 +662,29 @@ Each element: {"featureTitle": "...", "stories": [{"title": "short name", "descr
 
 			// Cap at 20 files per feature to avoid excessive LSP calls
 			const filesToQuery = [...featureFiles].slice(0, 20);
-			const enriched: EnrichedSymbol[] = [];
+			const featureSymbols: EnrichedSymbol[] = [];
 
 			for (const relativePath of filesToQuery) {
+				processedFiles.add(relativePath);
 				try {
 					const fileUri = URI.file(`${reposPath}/${repoId}/${relativePath}`);
 					const symbols = await this._getSymbolsWithHover(fileUri);
-					enriched.push(...symbols);
+					featureSymbols.push(...symbols);
+					totalSymbols += symbols.length;
 					this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: %s → %d symbols', relativePath, symbols.length);
 				} catch (err) {
 					this.logService.warn('[ProductManagerDataService] _enrichFeaturesWithLSP: skipping %s — %s', relativePath, err);
 				}
 			}
 
-			const hoverCount = enriched.filter(s => s.hoverText).length;
+			const hoverCount = featureSymbols.filter(s => s.hoverText).length;
 			this.logService.info('[ProductManagerDataService] _enrichFeaturesWithLSP: feature "%s" — %d symbols, hover coverage %d%%',
-				feature.title, enriched.length, enriched.length > 0 ? Math.round(hoverCount / enriched.length * 100) : 0);
+				feature.title, featureSymbols.length, featureSymbols.length > 0 ? Math.round(hoverCount / featureSymbols.length * 100) : 0);
 
-			result.push(enriched);
+			enriched.push(featureSymbols);
 		}
 
-		return result;
+		return { enriched, totalSymbols, totalFiles: processedFiles.size };
 	}
 
 	private async _getSymbolsWithHover(uri: URI): Promise<EnrichedSymbol[]> {

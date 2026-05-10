@@ -57,8 +57,10 @@ export class ProductOverviewView extends ViewPane {
 		dom.clearNode(this.bodyContainer);
 		const overview = this.productManagerDataService.getOverview();
 		const artifactsState = this.productManagerDataService.getArtifactsState();
+		const featuresMetadata = this.productManagerDataService.getFeaturesMetadata();
 		const stack = dom.append(this.bodyContainer, dom.$('.product-manager-stack'));
 
+		// Hero card
 		const hero = dom.append(stack, dom.$('.product-manager-card.product-manager-hero'));
 		dom.append(hero, dom.$('.product-manager-kicker', undefined, localize('productModeKicker', "Product Mode")));
 		dom.append(hero, dom.$('h2.product-manager-title', undefined, overview.title));
@@ -74,6 +76,7 @@ export class ProductOverviewView extends ViewPane {
 		connectCrmButton.enabled = false;
 		connectCrmButton.element.setAttribute('title', localize('connectCrmComingSoonTooltip', "Coming Soon"));
 
+		// "What Product Mode Sets Up" — rewritten to reflect what's actually here
 		const highlightsCard = dom.append(stack, dom.$('.product-manager-card'));
 		dom.append(highlightsCard, dom.$('.product-manager-section-title', undefined, localize('highlights', "What Product Mode Sets Up")));
 		const highlights = dom.append(highlightsCard, dom.$('ul.product-manager-list'));
@@ -82,12 +85,50 @@ export class ProductOverviewView extends ViewPane {
 			dom.append(item, dom.$('span.product-manager-body', undefined, highlight));
 		}
 
+		// Artifacts Status — compact chip summary
 		const artifactsCard = dom.append(stack, dom.$('.product-manager-card'));
 		dom.append(artifactsCard, dom.$('.product-manager-section-title', undefined, localize('productArtifactsStatus', "Artifacts Status")));
-		dom.append(artifactsCard, dom.$('p.product-manager-body', undefined, artifactsState.message || localize('productArtifactsFallbackStatus', "Product Mode is waiting for repository artifacts.")));
-		if (artifactsState.generatedAt) {
-			dom.append(artifactsCard, dom.$('span.product-manager-tag', undefined, localize('productArtifactsGeneratedAt', "Generated {0}", artifactsState.generatedAt)));
+
+		const chipRow = dom.append(artifactsCard, dom.$('.product-manager-status-chip-row'));
+
+		// Architecture chip
+		if (artifactsState.status === 'ready' && artifactsState.generatedAt) {
+			const label = artifactsState.fileCount !== undefined
+				? localize('archChipReady', "Architecture · {0} files · {1}", artifactsState.fileCount, this._formatTimestamp(artifactsState.generatedAt))
+				: localize('archChipReadyNoCount', "Architecture · {0}", this._formatTimestamp(artifactsState.generatedAt));
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--ready', undefined, label));
+		} else if (artifactsState.status === 'loading') {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--loading', undefined,
+				localize('archChipLoading', "Architecture · loading…")));
+		} else if (artifactsState.status === 'error') {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--error', undefined,
+				localize('archChipError', "Architecture · error")));
+		} else {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--pending', undefined,
+				localize('archChipPending', "Architecture · not loaded")));
 		}
 
+		// Features chip
+		if (featuresMetadata) {
+			const featLabel = localize('featChipReady', "Features · {0} features · {1} stories · {2}",
+				featuresMetadata.featureCount, featuresMetadata.userStoryCount, featuresMetadata.llmModel);
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--ready', undefined, featLabel));
+
+			const symbolLabel = localize('symbolChipReady', "Symbols · {0} symbols · {1} files",
+				featuresMetadata.symbolsProcessed, featuresMetadata.filesProcessed);
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--ready', undefined, symbolLabel));
+		} else {
+			dom.append(chipRow, dom.$('span.product-manager-status-chip.product-manager-status-chip--pending', undefined,
+				localize('featChipPending', "Features · not discovered")));
+		}
+	}
+
+	private _formatTimestamp(iso: string): string {
+		try {
+			const d = new Date(iso);
+			return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		} catch {
+			return iso;
+		}
 	}
 }

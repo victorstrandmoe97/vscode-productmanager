@@ -6,6 +6,9 @@
 import '../media/productManagerViews.css';
 import * as dom from '../../../../../base/browser/dom.js';
 import { Button } from '../../../../../base/browser/ui/button/button.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { defaultButtonStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -18,12 +21,14 @@ import { IContextKeyService } from '../../../../../platform/contextkey/common/co
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { localize } from '../../../../../nls.js';
-import { IProductManagerDataService } from '../../../../services/productManager/common/productManager.js';
+import { IProductManagerDataService, IProductManagerFeatureModel } from '../../../../services/productManager/common/productManager.js';
+
 
 export class FeaturesView extends ViewPane {
 
 	private bodyContainer: HTMLElement | undefined;
 	private _discoverButton: Button | undefined;
+	private _isDiscovering = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -36,6 +41,7 @@ export class FeaturesView extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@ICommandService private readonly commandService: ICommandService,
 		@IProductManagerDataService private readonly productManagerDataService: IProductManagerDataService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -63,15 +69,21 @@ export class FeaturesView extends ViewPane {
 		const stack = dom.append(this.bodyContainer, dom.$('.product-manager-stack'));
 		const artifactsState = this.productManagerDataService.getArtifactsState();
 		const features = this.productManagerDataService.getFeatures();
+		const featuresMetadata = this.productManagerDataService.getFeaturesMetadata();
 		const architectureReady = artifactsState.status === 'ready';
+		const hasFeatures = features.length > 0;
 
-		// Header card with intro text and "Discover Features" button
+		// Header card with intro text and action buttons
 		const intro = dom.append(stack, dom.$('.product-manager-card'));
 		dom.append(intro, dom.$('.product-manager-section-title', undefined, localize('featureBreakdown', "Feature Breakdown")));
 
 		let introText: string;
-		if (features.length > 0) {
-			introText = localize('featureDiscoveredBody', "Features were discovered from code analysis. Click Discover again to refresh.");
+		if (hasFeatures && featuresMetadata) {
+			const ts = this._formatTimestamp(featuresMetadata.discoveredAt);
+			introText = localize('featureDiscoveredBody', "{0} features · {1} user stories · discovered {2} via {3}",
+				featuresMetadata.featureCount, featuresMetadata.userStoryCount, ts, featuresMetadata.llmModel);
+		} else if (hasFeatures) {
+			introText = localize('featureDiscoveredBodySimple', "Features were discovered from code analysis. Click Refresh to re-run.");
 		} else if (architectureReady) {
 			introText = localize('featureReadyToDiscover', "Architecture is loaded. Click \"Discover Features\" to analyse the codebase and generate product features with user stories.");
 		} else {
@@ -81,19 +93,27 @@ export class FeaturesView extends ViewPane {
 
 		const actionsRow = dom.append(intro, dom.$('.product-manager-actions-row'));
 
-		const discoverButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: !architectureReady }));
-		discoverButton.label = localize('discoverFeatures', "Discover Features");
-		discoverButton.enabled = architectureReady;
+		const isRunning = this._isDiscovering;
+		const primaryLabel = isRunning
+			? localize('discoverFeaturesAnalysing', "Analysing code…")
+			: hasFeatures
+				? localize('refreshFeatures', "Refresh Features")
+				: localize('discoverFeatures', "Discover Features");
+
+		const discoverButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: hasFeatures && !isRunning }));
+		discoverButton.label = primaryLabel;
+		discoverButton.enabled = architectureReady && !isRunning;
 		this._discoverButton = discoverButton;
 
 		this._register(discoverButton.onDidClick(async () => {
-			discoverButton.enabled = false;
-			discoverButton.label = localize('discoverFeaturesAnalysing', "Analysing code…");
+			if (this._isDiscovering) { return; }
+			this._isDiscovering = true;
+			this.renderContent();
 			try {
 				await this.productManagerDataService.discoverFeatures();
 			} finally {
-				discoverButton.enabled = architectureReady;
-				discoverButton.label = localize('discoverFeatures', "Discover Features");
+				this._isDiscovering = false;
+				this.renderContent();
 			}
 		}));
 
@@ -105,7 +125,20 @@ export class FeaturesView extends ViewPane {
 		const list = dom.append(stack, dom.$('ul.product-manager-list'));
 		for (const feature of features) {
 			const item = dom.append(list, dom.$('li.product-manager-list-item'));
-			dom.append(item, dom.$('span.product-manager-list-title', undefined, feature.title));
+
+			// Title row with chat icon
+			const titleRow = dom.append(item, dom.$('.product-manager-list-title-row'));
+			dom.append(titleRow, dom.$('span.product-manager-list-title', undefined, feature.title));
+			const featureChatIcon = dom.append(titleRow, dom.$('span.product-manager-lane-chat-icon'));
+			featureChatIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.commentDiscussion));
+			featureChatIcon.title = localize('askAboutFeature', "Ask Copilot about this feature");
+			this._register(dom.addDisposableListener(featureChatIcon, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand('workbench.action.chat.open', {
+					query: this._buildFeatureChatPrompt(feature),
+					isPartialQuery: true,
+				});
+			}));
+
 			dom.append(item, dom.$('span.product-manager-body', undefined, feature.summary));
 
 			const laneRow = dom.append(item, dom.$('.product-manager-chip-row'));
@@ -127,5 +160,28 @@ export class FeaturesView extends ViewPane {
 				}
 			}
 		}
+	}
+
+	private _formatTimestamp(iso: string): string {
+		try {
+			return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+		} catch {
+			return iso;
+		}
+	}
+
+	private _buildFeatureChatPrompt(feature: IProductManagerFeatureModel): string {
+		const laneList = feature.lanes.join(', ') || 'none';
+		let prompt = `I am looking at the **${feature.title}** feature in this repository.\n\n${feature.summary}\n\nArchitectural lanes: ${laneList}\n`;
+
+		if (feature.userStories && feature.userStories.length > 0) {
+			const storiesBlock = feature.userStories.map((s, i) =>
+				`${i + 1}. **${s.title}** — ${s.description}`
+			).join('\n');
+			prompt += `\nUser stories discovered from the code:\n${storiesBlock}\n`;
+		}
+
+		prompt += '\n';
+		return prompt;
 	}
 }

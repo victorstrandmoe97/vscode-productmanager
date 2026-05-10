@@ -6,7 +6,10 @@
 import '../media/productManagerViews.css';
 import * as dom from '../../../../../base/browser/dom.js';
 import { Button } from '../../../../../base/browser/ui/button/button.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -28,6 +31,7 @@ export class ArchitectureView extends ViewPane {
 
 	private bodyContainer: HTMLElement | undefined;
 	private expandedLanes = new Set<string>();
+	private _isBusy = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -41,6 +45,7 @@ export class ArchitectureView extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
+		@ICommandService private readonly commandService: ICommandService,
 		@IProductManagerDataService private readonly productManagerDataService: IProductManagerDataService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -82,51 +87,63 @@ export class ArchitectureView extends ViewPane {
 		}
 
 		const actionsRow = dom.append(headerCard, dom.$('.product-manager-actions'));
+		const busy = this._isBusy;
 
 		if (!hasRepoId) {
 			// No repo connected yet — show primary connect button
 			const connectButton = this._register(new Button(actionsRow, defaultButtonStyles));
 			connectButton.label = localize('connectRepository', "Connect Repository");
 			connectButton.element.title = localize('connectRepositoryTooltip', "Enter a GitHub repository URL and optional PAT to load the architecture map");
+			connectButton.enabled = !busy;
 			this._register(connectButton.onDidClick(() => void this.runConnectDialog(connectButton)));
 		} else {
 			// Repo already connected — show load + reconnect + refresh + delete options
 			const loadButton = this._register(new Button(actionsRow, defaultButtonStyles));
-			loadButton.label = localize('loadArchitecture', "Load Architecture");
+			loadButton.label = busy ? localize('loadingArchitecture', "Loading…") : localize('loadArchitecture', "Load Architecture");
+			loadButton.enabled = !busy;
 			this._register(loadButton.onDidClick(async () => {
-				loadButton.enabled = false;
-				loadButton.label = localize('loadingArchitecture', "Loading…");
+				if (this._isBusy) { return; }
+				this._isBusy = true;
+				this.renderContent();
 				try {
 					await this.productManagerDataService.fetchArchitectureFromApi();
 				} finally {
-					loadButton.enabled = true;
-					loadButton.label = localize('loadArchitecture', "Load Architecture");
+					this._isBusy = false;
+					this.renderContent();
 				}
 			}));
 
 			const reconnectButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: true }));
 			reconnectButton.label = localize('reconnectRepository', "Change Repository");
 			reconnectButton.element.title = localize('reconnectRepositoryTooltip', "Connect a different repository");
-			this._register(reconnectButton.onDidClick(() => void this.runConnectDialog(reconnectButton)));
+			reconnectButton.enabled = !busy;
+			this._register(reconnectButton.onDidClick(() => {
+				if (this._isBusy) { return; }
+				void this.runConnectDialog(reconnectButton);
+			}));
 
 			const refreshButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: true }));
-			refreshButton.label = localize('refreshArchitecture', "Refresh");
+			refreshButton.label = busy ? localize('refreshingArchitecture', "Indexing…") : localize('refreshArchitecture', "Refresh");
 			refreshButton.element.title = localize('refreshArchitectureTooltip', "Re-index the repository and reload the architecture map");
+			refreshButton.enabled = !busy;
 			this._register(refreshButton.onDidClick(async () => {
-				refreshButton.enabled = false;
-				refreshButton.label = localize('refreshingArchitecture', "Indexing…");
+				if (this._isBusy) { return; }
+				this._isBusy = true;
+				this.renderContent();
 				try {
 					await this.productManagerDataService.recookAndRefresh();
 				} finally {
-					refreshButton.enabled = true;
-					refreshButton.label = localize('refreshArchitecture', "Refresh");
+					this._isBusy = false;
+					this.renderContent();
 				}
 			}));
 
 			const deleteButton = this._register(new Button(actionsRow, { ...defaultButtonStyles, secondary: true }));
 			deleteButton.label = localize('deleteRepository', "Delete Repository");
 			deleteButton.element.title = localize('deleteRepositoryTooltip', "Disconnect this repository and reset all Product Mode state");
+			deleteButton.enabled = !busy;
 			this._register(deleteButton.onDidClick(async () => {
+				if (this._isBusy) { return; }
 				deleteButton.enabled = false;
 				try {
 					await this.productManagerDataService.disconnectRepository();
@@ -146,6 +163,19 @@ export class ArchitectureView extends ViewPane {
 		for (const lane of lanes) {
 			this.renderLaneRow(laneList, lane);
 		}
+
+		// "Ask about architecture" chat entry point at the bottom of the lane list
+		const chatCard = dom.append(stack, dom.$('.product-manager-card.product-manager-chat-card'));
+		const chatRow = dom.append(chatCard, dom.$('.product-manager-chat-row'));
+		const chatIcon = dom.append(chatRow, dom.$('span.product-manager-chat-icon'));
+		chatIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.commentDiscussion));
+		dom.append(chatRow, dom.$('span.product-manager-chat-label', undefined, localize('askAboutArchitecture', "Ask Copilot about this architecture")));
+		this._register(dom.addDisposableListener(chatCard, dom.EventType.CLICK, () => {
+			void this.commandService.executeCommand('workbench.action.chat.open', {
+				query: this._buildArchitectureChatPrompt(lanes),
+				isPartialQuery: true,
+			});
+		}));
 	}
 
 	private async runConnectDialog(triggerButton: Button): Promise<void> {
@@ -207,6 +237,14 @@ export class ArchitectureView extends ViewPane {
 		}
 	}
 
+	private _buildArchitectureChatPrompt(lanes: readonly { id: string; title: string; summary: string; coverageLabel: string; files?: readonly string[] }[]): string {
+		const laneBlocks = lanes.map(lane => {
+			const fileLines = (lane.files ?? []).slice(0, 30).join('\n  - ');
+			return `### ${lane.title} (${lane.id})\n${lane.summary}\nCoverage: ${lane.coverageLabel}\nFiles:\n  - ${fileLines || '(none)'}`;
+		}).join('\n\n');
+		return `Here is the current architecture map for this repository, grouped by architectural lane:\n\n${laneBlocks}\n\n`;
+	}
+
 	private renderLaneRow(container: HTMLElement, lane: { id: string; title: string; summary: string; coverageLabel: string; files?: readonly string[] }): void {
 		const isExpanded = this.expandedLanes.has(lane.id);
 		const row = dom.append(container, dom.$('.product-manager-lane-row' + (isExpanded ? '.expanded' : '')));
@@ -217,6 +255,17 @@ export class ArchitectureView extends ViewPane {
 		const chevron = dom.append(header, dom.$('.product-manager-chevron', undefined, isExpanded ? '▾' : '▸'));
 		dom.append(header, dom.$('span.product-manager-list-title', undefined, lane.title));
 		dom.append(header, dom.$('span.product-manager-tag', undefined, lane.coverageLabel));
+
+		// Chat icon — opens Copilot with lane-specific context
+		const laneChatIcon = dom.append(header, dom.$('span.product-manager-lane-chat-icon'));
+		laneChatIcon.classList.add(...ThemeIcon.asClassNameArray(Codicon.commentDiscussion));
+		laneChatIcon.title = localize('askAboutLane', "Ask Copilot about this lane");
+		this._register(dom.addDisposableListener(laneChatIcon, dom.EventType.CLICK, (e) => {
+			dom.EventHelper.stop(e, true);
+			const fileLines = (lane.files ?? []).slice(0, 40).join('\n  - ');
+			const prompt = `I am looking at the **${lane.title}** architectural lane of this repository.\n\n${lane.summary}\nCoverage: ${lane.coverageLabel}\n\nFiles in this lane:\n  - ${fileLines || '(none)'}\n\n`;
+			void this.commandService.executeCommand('workbench.action.chat.open', { query: prompt, isPartialQuery: true });
+		}));
 
 		// Collapsible file list
 		const filesContainer = dom.append(row, dom.$('.product-manager-lane-files'));

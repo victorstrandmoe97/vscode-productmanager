@@ -29,7 +29,7 @@ import { WorkspacePicker, IWorkspaceSelection } from './sessionWorkspacePicker.j
 import { WebWorkspacePicker } from './webWorkspacePicker.js';
 import { NewChatInputWidget } from './newChatInput.js';
 import { IChatRequestVariableEntry } from '../../../../workbench/contrib/chat/common/attachments/chatVariableEntries.js';
-import { isProductManagerEnabled } from '../../../services/productManager/common/productManager.js';
+import { isProductManagerEnabled, PRODUCT_MANAGER_REPO_URL_SETTING } from '../../../services/productManager/common/productManager.js';
 
 // #region --- New Chat Widget ---
 
@@ -203,15 +203,26 @@ class NewChatWidget extends Disposable {
 	private _renderWorkspacePicker(container: HTMLElement): IDisposable {
 		const pickersRow = dom.append(container, dom.$('.session-workspace-picker'));
 		const pickersLabel = dom.append(pickersRow, dom.$('.session-workspace-picker-label'));
-		pickersLabel.textContent = this._workspacePicker.selectedProject
-			? this.getSelectedWorkspaceLabel()
-			: this.getChooseWorkspaceLabel();
 
-		this._workspacePicker.render(pickersRow);
-		return this._workspacePicker.onDidSelectWorkspace(() => {
+		const updateLabel = () => {
 			const workspace = this._workspacePicker.selectedProject;
 			pickersLabel.textContent = workspace ? this.getSelectedWorkspaceLabel() : this.getChooseWorkspaceLabel();
-		});
+			this.logService.info('[NewChatWidget] _renderWorkspacePicker: label updated to "%s"', pickersLabel.textContent);
+		};
+
+		updateLabel();
+
+		this._workspacePicker.render(pickersRow);
+
+		const store = new DisposableStore();
+		store.add(this._workspacePicker.onDidSelectWorkspace(() => updateLabel()));
+		store.add(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PRODUCT_MANAGER_REPO_URL_SETTING)) {
+				this.logService.info('[NewChatWidget] _renderWorkspacePicker: repo URL config changed, refreshing label');
+				updateLabel();
+			}
+		}));
+		return store;
 	}
 
 	// --- Send ---
@@ -304,9 +315,17 @@ class NewChatWidget extends Disposable {
 	}
 
 	private getSelectedWorkspaceLabel(): string {
-		return this.isProductManagerMode
-			? localize('productViewForWorkspace', "Product view for")
-			: localize('newSessionIn', "New session in");
+		if (!this.isProductManagerMode) {
+			return localize('newSessionIn', "New session in");
+		}
+		const repoUrl = (this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_URL_SETTING) || '').trim();
+		if (repoUrl) {
+			const match = repoUrl.replace(/\.git$/, '').match(/github\.com[/:](.+)/i);
+			const repoName = match ? match[1] : repoUrl;
+			this.logService.info('[NewChatWidget] getSelectedWorkspaceLabel: connected repo=%s', repoName);
+			return localize('productViewForRepo', "Product view for {0}", repoName);
+		}
+		return localize('productViewForWorkspace', "Product view for");
 	}
 }
 
