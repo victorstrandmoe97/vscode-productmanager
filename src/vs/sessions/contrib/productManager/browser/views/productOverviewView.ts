@@ -19,7 +19,7 @@ import { IContextKeyService } from '../../../../../platform/contextkey/common/co
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { localize } from '../../../../../nls.js';
-import { CONNECT_JIRA_COMMAND_ID, IProductManagerDataService } from '../../../../services/productManager/common/productManager.js';
+import { CONNECT_JIRA_COMMAND_ID, CONNECT_SNYK_COMMAND_ID, IProductManagerDataService } from '../../../../services/productManager/common/productManager.js';
 
 export class ProductOverviewView extends ViewPane {
 
@@ -70,6 +70,10 @@ export class ProductOverviewView extends ViewPane {
 		const connectJiraButton = this._register(new Button(actions, defaultButtonStyles));
 		connectJiraButton.label = localize('connectJira', "Connect Jira");
 		this._register(connectJiraButton.onDidClick(() => this.commandService.executeCommand(CONNECT_JIRA_COMMAND_ID)));
+
+		const connectSnykButton = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true }));
+		connectSnykButton.label = localize('connectSnyk', "Connect Snyk");
+		this._register(connectSnykButton.onDidClick(() => this.commandService.executeCommand(CONNECT_SNYK_COMMAND_ID)));
 
 		const connectCrmButton = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true }));
 		connectCrmButton.label = localize('connectCrmComingSoon', "Connect CRM (Coming Soon)");

@@ -15,6 +15,8 @@ export const PRODUCT_MANAGER_REPOS_PATH_SETTING = 'sessions.productManager.local
 
 export const CONNECT_JIRA_COMMAND_ID = 'workbench.action.productManager.connectJira';
 export const CONNECT_CRM_COMMAND_ID = 'workbench.action.productManager.connectCrm';
+export const CONNECT_SNYK_COMMAND_ID = 'workbench.action.productManager.connectSnyk';
+export const OPEN_DISCOVER_CHAT_COMMAND_ID = 'workbench.action.productManager.openDiscoverChat';
 
 export const PRODUCT_MANAGER_LANES = [
 	'shared',

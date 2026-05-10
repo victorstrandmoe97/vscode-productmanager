@@ -19,7 +19,15 @@ import { IContextKeyService } from '../../../../../platform/contextkey/common/co
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { localize } from '../../../../../nls.js';
-import { CONNECT_JIRA_COMMAND_ID, IProductManagerDataService } from '../../../../services/productManager/common/productManager.js';
+import { CONNECT_JIRA_COMMAND_ID, CONNECT_SNYK_COMMAND_ID, IProductManagerDataService } from '../../../../services/productManager/common/productManager.js';
+
+const snykButtonStyles = {
+	...defaultButtonStyles,
+	buttonBackground: '#4C4A73',
+	buttonHoverBackground: '#362F78',
+	buttonForeground: '#FFFFFF',
+	buttonBorder: '#FF69C6',
+};
 
 export class JiraView extends ViewPane {
 
@@ -63,9 +71,15 @@ export class JiraView extends ViewPane {
 		dom.append(hero, dom.$('.product-manager-section-title', undefined, localize('jiraImport', "Jira Import")));
 		dom.append(hero, dom.$('p.product-manager-body', undefined, jira.summary));
 
-		const button = this._register(new Button(dom.append(hero, dom.$('.product-manager-actions')), defaultButtonStyles));
+		const actions = dom.append(hero, dom.$('.product-manager-actions.product-manager-actions--stacked'));
+		const button = this._register(new Button(actions, defaultButtonStyles));
 		button.label = localize('connectJiraButton', "Connect Jira");
 		this._register(button.onDidClick(() => this.commandService.executeCommand(CONNECT_JIRA_COMMAND_ID)));
+
+		const connectSnykButton = this._register(new Button(actions, snykButtonStyles));
+		connectSnykButton.label = localize('connectSnykButton', "Connect Snyk");
+		connectSnykButton.element.classList.add('product-manager-snyk-button');
+		this._register(connectSnykButton.onDidClick(() => this.commandService.executeCommand(CONNECT_SNYK_COMMAND_ID)));
 
 		const checklistCard = dom.append(stack, dom.$('.product-manager-card'));
 		dom.append(checklistCard, dom.$('.product-manager-list-title', undefined, jira.callToAction));

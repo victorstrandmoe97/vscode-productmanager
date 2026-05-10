@@ -19,7 +19,9 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
+import { GITHUB_REMOTE_FILE_SCHEME } from '../../../services/sessions/common/session.js';
 import { ISessionsProvidersService } from '../../../services/sessions/browser/sessionsProvidersService.js';
 import { IAquariumService, IMountedToggleHandle } from '../../aquarium/browser/aquariumOverlay.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
@@ -29,7 +31,9 @@ import { WorkspacePicker, IWorkspaceSelection } from './sessionWorkspacePicker.j
 import { WebWorkspacePicker } from './webWorkspacePicker.js';
 import { NewChatInputWidget } from './newChatInput.js';
 import { IChatRequestVariableEntry } from '../../../../workbench/contrib/chat/common/attachments/chatVariableEntries.js';
-import { isProductManagerEnabled, PRODUCT_MANAGER_REPO_URL_SETTING } from '../../../services/productManager/common/productManager.js';
+import { isProductManagerEnabled, OPEN_DISCOVER_CHAT_COMMAND_ID, PRODUCT_MANAGER_REPO_URL_SETTING } from '../../../services/productManager/common/productManager.js';
+import { PRODUCT_MANAGER_ARCHITECTURE_VIEW_ID } from '../../productManager/browser/productManager.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 
 // #region --- New Chat Widget ---
 
@@ -38,6 +42,11 @@ class NewChatWidget extends Disposable {
 	private readonly _workspacePicker: WorkspacePicker;
 	private readonly _newChatInput: NewChatInputWidget;
 	private _aquariumToggle: IMountedToggleHandle | undefined;
+	private _chatWidgetContainer: HTMLElement | undefined;
+	private _setupTitle: HTMLElement | undefined;
+	private _setupBody: HTMLElement | undefined;
+	private _setupActions: HTMLElement | undefined;
+	private readonly _setupActionDisposables = this._register(new DisposableStore());
 
 	/** Tracks an in-flight wait for a provider's session types to become available. */
 	private readonly _pendingSessionTypeWait = new MutableDisposable<IDisposable>();
@@ -50,6 +59,8 @@ class NewChatWidget extends Disposable {
 		@IWorkspaceTrustRequestService private readonly workspaceTrustRequestService: IWorkspaceTrustRequestService,
 		@IAquariumService private readonly aquariumService: IAquariumService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IViewsService private readonly viewsService: IViewsService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 		// On web (vscode.dev / insiders.vscode.dev), use {@link WebWorkspacePicker}
@@ -92,10 +103,12 @@ class NewChatWidget extends Disposable {
 			} else {
 				await this._onWorkspaceSelected(undefined, undefined);
 			}
+			this._updateProductSetupState();
 			this._newChatInput.focus();
 		}));
 		this._register(this._newChatInput.sessionTypePicker.onDidSelectSessionType(async sessionType => {
 			await this._onWorkspaceSelected(this._workspacePicker.selectedProject, sessionType);
+			this._updateProductSetupState();
 			this._newChatInput.focus();
 		}));
 	}
@@ -105,9 +118,12 @@ class NewChatWidget extends Disposable {
 	render(parent: HTMLElement): void {
 		const element = dom.append(parent, dom.$('.sessions-chat-widget'));
 		const chatWidgetContainer = dom.append(element, dom.$('.new-chat-widget-container'));
+		this._chatWidgetContainer = chatWidgetContainer;
 		const chatWidgetContent = dom.append(chatWidgetContainer, dom.$('.new-chat-widget-content'));
 
 		this._aquariumToggle = this._register(this.aquariumService.mountToggle(element));
+
+		this._renderProductSetupTakeover(chatWidgetContent);
 
 		const workspacePickerContainer = dom.append(chatWidgetContent, dom.$('.new-session-workspace-picker-container'));
 		this._register(this._renderWorkspacePicker(workspacePickerContainer));
@@ -125,6 +141,21 @@ class NewChatWidget extends Disposable {
 		}
 
 		chatWidgetContainer.classList.add('revealed');
+		this._updateProductSetupState();
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PRODUCT_MANAGER_REPO_URL_SETTING)) {
+				this._updateProductSetupState();
+			}
+		}));
+	}
+
+	private _renderProductSetupTakeover(container: HTMLElement): void {
+		const takeover = dom.append(container, dom.$('.product-setup-takeover'));
+		const shell = dom.append(takeover, dom.$('.product-setup-takeover-shell'));
+		dom.append(shell, dom.$('.product-setup-kicker', undefined, localize('productSetupKicker', "Product Setup")));
+		this._setupTitle = dom.append(shell, dom.$('h2.product-setup-title'));
+		this._setupBody = dom.append(shell, dom.$('p.product-setup-body'));
+		this._setupActions = dom.append(shell, dom.$('.product-setup-actions'));
 	}
 
 	/**
@@ -262,6 +293,9 @@ class NewChatWidget extends Disposable {
 	}
 
 	focusInput(): void {
+		if (this._isProductSetupActive()) {
+			return;
+		}
 		this._newChatInput.focus();
 	}
 
@@ -302,6 +336,65 @@ class NewChatWidget extends Disposable {
 
 	selectWorkspace(workspace: IWorkspaceSelection): void {
 		this._workspacePicker.setSelectedWorkspace(workspace);
+		this._updateProductSetupState();
+	}
+
+	private _updateProductSetupState(): void {
+		const container = this._chatWidgetContainer;
+		const title = this._setupTitle;
+		const body = this._setupBody;
+		const actions = this._setupActions;
+		if (!container || !title || !body || !actions) {
+			return;
+		}
+
+		const setupActive = this._isProductSetupActive();
+		container.classList.toggle('product-setup-active', setupActive);
+		if (!setupActive) {
+			return;
+		}
+
+		const repoUrl = (this.configurationService.getValue<string>(PRODUCT_MANAGER_REPO_URL_SETTING) || '').trim();
+		this._setupActionDisposables.clear();
+		dom.clearNode(actions);
+
+		if (repoUrl) {
+			const repoName = this._getConnectedRepoName(repoUrl);
+			title.textContent = localize('productSetupDiscoverTitle', "Open Discover Chat for {0}", repoName);
+			body.textContent = localize('productSetupDiscoverBody', "Product Mode is holding the chat surface here until the repository is opened as a GitHub-backed Discover session.");
+
+			const openDiscoverButton = dom.append(actions, dom.$('button.product-setup-button.product-setup-button-primary', { type: 'button' }, localize('productSetupOpenDiscover', "Open Discover Chat")));
+			this._setupActionDisposables.add(dom.addDisposableListener(openDiscoverButton, dom.EventType.CLICK, () => {
+				void this.commandService.executeCommand(OPEN_DISCOVER_CHAT_COMMAND_ID);
+			}));
+
+			const changeRepoButton = dom.append(actions, dom.$('button.product-setup-button', { type: 'button' }, localize('productSetupOpenArchitecture', "Open Architecture Setup")));
+			this._setupActionDisposables.add(dom.addDisposableListener(changeRepoButton, dom.EventType.CLICK, () => {
+				void this.viewsService.openView(PRODUCT_MANAGER_ARCHITECTURE_VIEW_ID, true);
+			}));
+		} else {
+			title.textContent = localize('productSetupConnectTitle', "Connect a Repository to Start Product Chat");
+			body.textContent = localize('productSetupConnectBody', "Product Mode keeps the chat area in setup mode until a repository is connected and opened as a GitHub-backed Discover session.");
+
+			const openArchitectureButton = dom.append(actions, dom.$('button.product-setup-button.product-setup-button-primary', { type: 'button' }, localize('productSetupConnectButton', "Open Architecture Setup")));
+			this._setupActionDisposables.add(dom.addDisposableListener(openArchitectureButton, dom.EventType.CLICK, () => {
+				void this.viewsService.openView(PRODUCT_MANAGER_ARCHITECTURE_VIEW_ID, true);
+			}));
+		}
+	}
+
+	private _isProductSetupActive(): boolean {
+		return this.isProductManagerMode && !this._isGitHubRemoteWorkspaceSelected();
+	}
+
+	private _isGitHubRemoteWorkspaceSelected(): boolean {
+		const repoUri = this._workspacePicker.selectedProject?.workspace.repositories[0]?.uri;
+		return repoUri?.scheme === GITHUB_REMOTE_FILE_SCHEME;
+	}
+
+	private _getConnectedRepoName(repoUrl: string): string {
+		const match = repoUrl.replace(/\.git$/, '').match(/github\.com[/:](.+)/i);
+		return match ? match[1] : repoUrl;
 	}
 
 	private get isProductManagerMode(): boolean {

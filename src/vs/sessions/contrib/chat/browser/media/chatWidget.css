@@ -52,6 +52,98 @@
 	animation: chat-full-welcome-fade-in 0.35s ease 0.1s both;
 }
 
+.product-setup-takeover {
+	display: none;
+	width: 100%;
+}
+
+.new-chat-widget-container.product-setup-active {
+	justify-content: center;
+}
+
+.new-chat-widget-container.product-setup-active .product-setup-takeover {
+	display: block;
+	animation: chat-full-welcome-fade-in 0.35s ease both;
+}
+
+.new-chat-widget-container.product-setup-active .new-session-workspace-picker-container,
+.new-chat-widget-container.product-setup-active .new-chat-input-container,
+.new-chat-widget-container.product-setup-active .new-chat-bottom-container {
+	display: none !important;
+}
+
+.product-setup-takeover-shell {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	width: 100%;
+	max-width: 760px;
+	margin: 0 auto;
+	padding: 30px;
+	border-radius: 24px;
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 72%, transparent 28%);
+	background:
+		radial-gradient(circle at top right, color-mix(in srgb, var(--vscode-button-background) 18%, transparent 82%), transparent 42%),
+		linear-gradient(155deg, color-mix(in srgb, var(--vscode-editor-background) 90%, white 10%), color-mix(in srgb, var(--vscode-sideBar-background) 76%, white 24%));
+	box-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+}
+
+.product-setup-kicker {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--vscode-descriptionForeground) 74%, var(--vscode-button-background) 26%);
+}
+
+.product-setup-title {
+	margin: 0;
+	font-size: 34px;
+	line-height: 1.08;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.product-setup-body {
+	margin: 0;
+	max-width: 620px;
+	font-size: 15px;
+	line-height: 1.6;
+	color: var(--vscode-descriptionForeground);
+}
+
+.product-setup-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 4px;
+}
+
+.product-setup-button {
+	border: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-panel-border)) 72%, transparent 28%);
+	background: color-mix(in srgb, var(--vscode-button-secondaryBackground, var(--vscode-button-background)) 68%, transparent 32%);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+	border-radius: 999px;
+	padding: 10px 16px;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.product-setup-button:hover {
+	background: color-mix(in srgb, var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground)) 72%, transparent 28%);
+}
+
+.product-setup-button.product-setup-button-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: color-mix(in srgb, var(--vscode-button-background) 70%, transparent 30%);
+}
+
+.product-setup-button.product-setup-button-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
 @keyframes chat-full-welcome-fade-in {
 	from {
 		opacity: 0;
